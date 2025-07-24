@@ -5,7 +5,6 @@ import io
 import base64
 import altair as alt
 import os
-import openai
 import wikipedia
 import tempfile
 from fpdf import FPDF
