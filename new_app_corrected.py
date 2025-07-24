@@ -17,8 +17,6 @@ import datetime
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
 
-# Recupera tu API key desde Streamlit secrets
-openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # ——————————————————————————————————————————————————————
 # Helper para Base64
@@ -433,65 +431,8 @@ elif pagina == "Comparativa Per Cápita":
         st.subheader(f"Valores per cápita por {st.session_state['label'].lower()} en misma categoría")
         st.dataframe(st.session_state['df_cat'], use_container_width=True, hide_index=True)
 
-    # Generar informe y PDF
-    if 'chart' in st.session_state:
-        if st.button("Generar Informe y PDF"):
-            resumen = obtener_resumen_wikipedia(st.session_state['entity'], None)
-            prompt = f"""
-Eres un economista experto en desarrollo territorial en Colombia. Extracto de Wikipedia sobre '{st.session_state['entity']}':
-
-{resumen}
-
-Redacta un informe en dos partes: introducción y análisis de COP per cápita para {cuenta_sel} comparando (COP {st.session_state['pc_sel']:,.0f}), categoría (COP {st.session_state['pc_cat']:,.0f}) y nacional (COP {st.session_state['pc_all']:,.0f}). Sin viñetas.
-"""
-            try:
-                resp = openai.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role":"system","content":"Eres un economista experto en desarrollo territorial en Colombia."},
-                        {"role":"user","content":prompt}
-                    ], max_tokens=800, temperature=0.7
-                )
-                st.session_state['informe'] = resp.choices[0].message.content.strip()
-            except openai.error.RateLimitError:
-                st.session_state['informe'] = 'Error: límite API excedido.'
-    # Mostrar informe y PDF
-    if 'informe' in st.session_state:
-        st.markdown(st.session_state['informe'])
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_auto_page_break(True,15)
-        # Informe
-        pdf.set_font("Arial","B",12)
-        pdf.cell(0,8,"Informe IA",ln=True)
-        pdf.set_font("Arial",size=10)
-        for line in st.session_state['informe'].split("\n"):
-            pdf.multi_cell(0,5,line)
-        pdf.ln(5)
-        # Gráfico
-        pdf.set_font("Arial","B",14)
-        pdf.cell(0,10,f"Comparativa Per Cápita - {st.session_state['entity']}",ln=True,align="C")
-        pdf.ln(5)
-        import vl_convert as vlc
-        tmp= tempfile.NamedTemporaryFile(suffix=".png",delete=False)
-        tmp.write(vlc.vegalite_to_png(st.session_state['chart'].to_dict()))
-        tmp.close()
-        pdf.image(tmp.name,x=10,w=190)
-        pdf.ln(95)
-        # Tablas
-        pdf.set_font("Arial","B",12)
-        pdf.cell(0,8,"Valores per cápita",ln=True)
-        pdf.set_font("Arial",size=10)
-        for _,r in st.session_state['df_bar_fmt'].iterrows(): pdf.cell(0,6,f"{r['Tipo']}: {r['COP per cápita']}",ln=True)
-        pdf.ln(5)
-        pdf.set_font("Arial","B",12)
-        pdf.cell(0,8,f"Per cápita {st.session_state['label'].lower()}s categoría {st.session_state['cat']}",ln=True)
-        pdf.set_font("Arial","B",10)
-        pdf.cell(80,6,st.session_state['label'],1);pdf.cell(40,6,"Per cápita",1);pdf.cell(60,6,"Valor Absoluto",1,ln=True)
-        pdf.set_font("Arial",size=10)
-        for _,r in st.session_state['df_cat'].iterrows(): pdf.cell(80,6,r[st.session_state['label']],1);pdf.cell(40,6,r['Per cápita'],1);pdf.cell(60,6,r['Valor Absoluto (millones)'],1,ln=True)
-        data=pdf.output(dest="S").encode("latin-1")
-        st.download_button("📄 Descargar Informe completo en PDF",data=data,file_name=f"reporte_comparativa_{st.session_state['entity']}.pdf",mime="application/pdf")
+   
+            
 
 
 
