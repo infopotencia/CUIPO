@@ -7,6 +7,7 @@ import altair as alt
 import os
 import wikipedia
 import tempfile
+import openai
 from fpdf import FPDF
 import vl_convert as vlc
 import datetime
