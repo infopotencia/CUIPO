@@ -4,7 +4,6 @@ import requests
 import io
 import base64
 import altair as alt
-from comparativa import render_comparativa
 import os
 import openai
 import wikipedia
