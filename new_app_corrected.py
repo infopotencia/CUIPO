@@ -478,28 +478,10 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
     pdf.set_auto_page_break(True, 15)
 
     # ————— Registrar Montserrat —————
-    # 1. Carpeta absoluta donde estás guardando las fuentes
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    FONT_DIR = os.path.join(BASE_DIR, "fonts")
-    
-    # 2. Ruta completa del archivo Montserrat
-    font_regular_path = os.path.join(FONT_DIR, "Montserrat-Regular.ttf")
-    font_bold_path    = os.path.join(FONT_DIR, "Montserrat-SemiBold.ttf")
-    font_italic_path  = os.path.join(FONT_DIR, "Montserrat-Italic.ttf")
-    
-    # 3. Registro de fuentes
-    from fpdf import FPDF
-    pdf = FPDF()
-    pdf.add_page()
-    
-    try:
-        pdf.add_font('Montserrat', '', font_regular_path, uni=True)
-        pdf.add_font('Montserrat', 'B', font_bold_path, uni=True)
-        pdf.add_font('Montserrat', 'I', font_italic_path, uni=True)
-        pdf.set_font('Montserrat', '', 12)
-    except Exception as e:
-        print("⚠️ Error cargando Montserrat, usando Arial. Error:", e)
-        pdf.set_font('Arial', '', 12)
+    FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+    pdf.add_font('Montserrat',   '',  os.path.join(FONT_DIR, 'Montserrat-Regular.ttf'),   uni=True)
+    pdf.add_font('Montserrat',   'B', os.path.join(FONT_DIR, 'Montserrat-Bold.ttf'),      uni=True)
+    pdf.add_font('Montserrat',   'I', os.path.join(FONT_DIR, 'Montserrat-Italic.ttf'),    uni=True)
 
     # 1) Logo
     pdf.image("pdigitalazul.png", x=10, y=8, w=60)
