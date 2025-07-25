@@ -5,18 +5,23 @@ import io
 import base64
 import altair as alt
 import os
+import openai
 import wikipedia
 import tempfile
-import openai
 from fpdf import FPDF
 import vl_convert as vlc
 import datetime
+import qrcode
+from PIL import Image
+import matplotlib.pyplot as plt
 
 
 
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
 
+# Recupera tu API key desde Streamlit secrets
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # ——————————————————————————————————————————————————————
 # Helper para Base64
@@ -199,29 +204,34 @@ if pagina == "Programación de Ingresos":
         with st.expander("Datos brutos", expanded=False):
             st.dataframe(df_i.drop(columns=['presupuesto_inicial', 'presupuesto_definitivo'], errors='ignore'), use_container_width=True)
 
-        codigos = ["1", "1.1", "1.1.01.01.200", "1.1.01.02.104", "1.1.01.02.200", "1.1.01.02.300", "1.1.02.06.001", "1.2.06", "1.2.07"]
+        codigos = ["1", "1.1", "1.1.01.01.200", "1.1.01.02", "1.1.01.02.200", "1.1.01.02.300", "1.1.02.06.001", "1.2.06", "1.2.07", "1.1.01.01", "1.1.01.01.200", "1.1.01.02.200.01"]
         df_fil = df_i[df_i['ambito_codigo'].astype(str).isin(codigos)] if 'ambito_codigo' in df_i.columns else df_i.copy()
 
         resumen = df_fil.copy()
-        resumen['Presupuesto Inicial'] = pd.to_numeric(resumen.get('cod_detalle_sectorial', 0), errors='coerce') / 1e6
-        resumen['Presupuesto Definitivo'] = pd.to_numeric(resumen.get('nom_detalle_sectorial', 0), errors='coerce') / 1e6
+        resumen['Presupuesto Inicial']   = pd.to_numeric(resumen.get('cod_detalle_sectorial', 0), errors='coerce') / 1e6
+        resumen['Presupuesto Definitivo']= pd.to_numeric(resumen.get('nom_detalle_sectorial', 0), errors='coerce') / 1e6
         resumen = resumen.rename(columns={
             'ambito_codigo': 'Ámbito Código',
             'ambito_nombre': 'Ámbito Nombre'
         })
 
-        resumen = resumen.sort_values('Presupuesto Definitivo', ascending=False)
+        # <-- Aquí ordenamos por Ámbito Código ascendente
+        resumen = resumen.sort_values('Ámbito Código', ascending=True)
 
-        resumen['Presupuesto Inicial'] = resumen['Presupuesto Inicial'].apply(lambda x: f"$ {x:,.2f}")
-        resumen['Presupuesto Definitivo'] = resumen['Presupuesto Definitivo'].apply(lambda x: f"$ {x:,.2f}")
-
-        total_presupuesto = pd.to_numeric(df_fil[df_fil['ambito_codigo'].astype(str) == '1']['nom_detalle_sectorial'], errors='coerce').sum() / 1e6
+        # Luego damos formato monetario
+        resumen['Presupuesto Inicial']   = resumen['Presupuesto Inicial']  .apply(lambda x: f"$ {x:,.2f}")
+        resumen['Presupuesto Definitivo']= resumen['Presupuesto Definitivo'] .apply(lambda x: f"$ {x:,.2f}")
 
         st.subheader("Ingresos filtrados (millones de pesos)")
-        st.dataframe(resumen[['Ámbito Código', 'Ámbito Nombre', 'Presupuesto Inicial', 'Presupuesto Definitivo']], use_container_width=True, hide_index=True)
+        st.dataframe(
+            resumen[['Ámbito Código','Ámbito Nombre','Presupuesto Inicial','Presupuesto Definitivo']],
+            use_container_width=True, hide_index=True
+        )
 
+        total_presupuesto = pd.to_numeric(df_fil[df_fil['ambito_codigo'].astype(str) == '1']['nom_detalle_sectorial'], errors='coerce').sum() / 1e6
         st.subheader("Ingreso total - Presupuesto definitivo (millones de pesos)")
         st.metric(label="Total", value=f"$ {total_presupuesto:,.2f}")
+
 
         # Histórico nominal vs real
         st.subheader("Histórico Ingresos nominal vs real (millones de pesos)")
@@ -431,8 +441,159 @@ elif pagina == "Comparativa Per Cápita":
         st.subheader(f"Valores per cápita por {st.session_state['label'].lower()} en misma categoría")
         st.dataframe(st.session_state['df_cat'], use_container_width=True, hide_index=True)
 
-   
-            
+    # Generar informe y PDF
+    if 'chart' in st.session_state:
+        if st.button("Generar Informe y PDF"):
+            resumen = obtener_resumen_wikipedia(st.session_state['entity'], None)
+            prompt = f"""
+Actúa como un economista especializado en desarrollo territorial colombiano. A continuación se presenta un extracto de Wikipedia sobre {st.session_state['entity']}, que puede contener información útil sobre su economía o contexto territorial:
+
+{resumen}
+
+Redacta un informe breve y técnico, compuesto por dos partes: introducción general y análisis del indicador. El texto debe estar escrito como un cuerpo narrativo fluido, sin subtítulos ni viñetas, y con tono profesional.
+
+Primero, presenta el contexto básico del municipio o departamento: ubicación, importancia regional, dinámica económica y aspectos territoriales relevantes. Usa solo la información del resumen si está relacionada con economía, desarrollo productivo o estructura institucional. Si no hay información útil en el resumen, escribe una breve descripción general en función del conocimiento que tengas sobre el territorio.
+
+Después, describe los resultados del indicador per cápita '{cuenta_sel}' para {st.session_state['entity']}. Aclara explícitamente que este valor no representa ingreso por persona, sino que es una medida relativa que permite comparar el desempeño fiscal o recaudatorio entre entidades. Menciona si el valor observado para {st.session_state['entity']} (COP {st.session_state['pc_sel']:,.0f}) está por encima o por debajo del promedio de su categoría (COP {st.session_state['pc_cat']:,.0f}) y del promedio nacional (COP {st.session_state['pc_all']:,.0f}). Interpreta su posición relativa sin emitir juicios de valor ni incluir recomendaciones. No hagas suposiciones sobre informalidad, debilidad institucional o problemas de recaudo.
+
+Evita sugerencias, recomendaciones, o valoraciones implícitas sobre si el resultado es bueno o malo. No asocies el indicador con ingreso per cápita real. Escribe con claridad, coherencia y precisión técnica.
+"""
+
+            try:
+                resp = openai.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role":"system","content":"Eres un economista experto en desarrollo territorial en Colombia."},
+                        {"role":"user","content":prompt}
+                    ], max_tokens=800, temperature=0.7
+                )
+                st.session_state['informe'] = resp.choices[0].message.content.strip()
+            except openai.error.RateLimitError:
+                st.session_state['informe'] = 'Error: límite API excedido.'
+    # Mostrar informe y PDF
+if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
+    st.markdown(st.session_state['informe'])
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(True, 15)
+
+    # ————— Registrar Montserrat —————
+    FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+    pdf.add_font('Montserrat',   '',  os.path.join(FONT_DIR, 'Montserrat-Regular.ttf'),   uni=True)
+    pdf.add_font('Montserrat',   'B', os.path.join(FONT_DIR, 'Montserrat-Bold.ttf'),      uni=True)
+    pdf.add_font('Montserrat',   'I', os.path.join(FONT_DIR, 'Montserrat-Italic.ttf'),    uni=True)
+
+    # 1) Logo
+    pdf.image("pdigitalazul.png", x=10, y=8, w=60)
+    pdf.ln(20)
+
+    # 2) Título de variable
+    pdf.set_font("Montserrat", "B", 14)
+    pdf.set_x(10)
+    pdf.cell(0, 8, st.session_state['cuenta_comparativa'], ln=True, align="C")
+    pdf.ln(5)
+
+    # 3) Informe
+    pdf.set_font("Montserrat", "B", 12)
+    pdf.cell(0, 8, "Informe", ln=True)
+    pdf.set_font("Montserrat", "", 10)
+    for line in st.session_state['informe'].split("\n"):
+        pdf.multi_cell(0, 5, line)
+    pdf.ln(5)
+
+    # 4) Gráfico con Matplotlib para el PDF
+    pdf.set_font("Montserrat", "B", 12)
+    pdf.cell(0, 10, f"Comparativa Per Cápita - {st.session_state['entity']}", ln=True, align="L")
+    pdf.ln(5)
+
+    # Preparamos datos
+    df_plot = st.session_state['df_bar_fmt'].copy()
+    # 'df_bar_fmt' sólo tiene Tipo y COP per cápita como string,
+    # así que volvemos a los números:
+    tipos = [r for r in df_plot['Tipo']]
+    valores = [int(r.replace("$","").replace(" ","").replace(",","")) for r in df_plot['COP per cápita']]
+
+    # Creamos figura
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.bar(tipos, valores)
+    ax.set_ylabel("COP per cápita")
+    ax.set_ylim(0, max(valores) * 1.1)
+    # Creamos figura
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.bar(tipos, valores)
+    ax.set_ylabel("COP per cápita")
+    ax.set_ylim(0, max(valores) * 1.1)
+
+    # Rotamos etiquetas con labelrotation y alineamos con setp
+    ax.tick_params(axis="x", labelrotation=30)
+    plt.setp(ax.get_xticklabels(), ha="right")
+
+    # Formateamos las etiquetas del eje Y
+    ax.yaxis.set_major_formatter(lambda x, pos: f"$ {int(x):,}")
+    fig.tight_layout()
+
+    # Guardamos a PNG (fondo blanco sin alpha)
+    tmp_fig = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    fig.savefig(tmp_fig.name, dpi=150)
+    plt.close(fig)
+
+    # Insertamos en el PDF
+    pdf.image(tmp_fig.name, x=10, w=190)
+    pdf.ln(20)
+
+
+
+    # 5) Tablas
+    pdf.set_font("Montserrat", "B", 12)
+    pdf.cell(0, 8, "Valores per cápita", ln=True)
+    pdf.set_font("Montserrat", "", 10)
+    for _, r in st.session_state['df_bar_fmt'].iterrows():
+        pdf.cell(0, 6, f"{r['Tipo']}: {r['COP per cápita']}", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Montserrat", "B", 12)
+    pdf.cell(0, 8, f"Per cápita {st.session_state['label'].lower()}s categoría {st.session_state['cat']}", ln=True)
+    pdf.set_font("Montserrat", "B", 10)
+    pdf.cell(80, 6, st.session_state['label'], 1)
+    pdf.cell(40, 6, "Per cápita", 1)
+    pdf.cell(60, 6, "Valor Absoluto", 1, ln=True)
+    pdf.set_font("Montserrat", "", 10)
+    for _, r in st.session_state['df_cat'].iterrows():
+        pdf.cell(80, 6, r[st.session_state['label']], 1)
+        pdf.cell(40, 6, r['Per cápita'], 1)
+        pdf.cell(60, 6, r['Valor Absoluto (millones)'], 1, ln=True)
+
+    # 6) Texto + QR
+    pdf.ln(10)
+    pdf.set_font("Montserrat", "I", 10)
+    pdf.set_x(10)
+    pdf.cell(0, 8, "¿Quieres llevar más potencia al desarrollo de tu territorio? Contáctanos", ln=True)
+
+    qr = qrcode.QRCode(box_size=4, border=1)
+    qr.add_data("https://potencia.com.co/")
+    qr.make(fit=True)
+    img_qr = qr.make_image(fill_color="#262C60", back_color="white")
+    buf = io.BytesIO(); img_qr.save(buf, format="PNG"); buf.seek(0)
+
+    tmp_qr = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp_qr.write(buf.read()); tmp_qr.close()
+
+    qr_w = 40
+    x_qr = pdf.l_margin
+    y_qr = pdf.get_y() + 2
+    pdf.image(tmp_qr.name, x=x_qr, y=y_qr, w=qr_w)
+    pdf.link(x_qr, y_qr, qr_w, qr_w, "https://potencia.com.co/")
+
+    # 7) Descargar
+    data = pdf.output(dest="S").encode("latin-1")
+    st.download_button(
+        "📄 Descargar Informe completo en PDF",
+        data=pdf.output(dest="S").encode("latin-1"),
+        file_name=f"reporte_comparativa_{st.session_state['entity']}_{st.session_state['cuenta_comparativa']}.pdf",
+        mime="application/pdf"
+    )
+
+
 
 
 
@@ -581,7 +742,7 @@ elif pagina == "Ejecución de Gastos":
             'Obligaciones': format_cop
         }), use_container_width=True, hide_index=True)
 
-        st.metric("Total compromisos todas las vigencias", format_cop(tot['compromisos']))
+        st.metric("Total compromisos todas las vigencias", format_cop(tot['compromisos']/ 1e6))
 
                 # --- Consolidado por sección presupuestal ---
         df_sec = df_raw[
