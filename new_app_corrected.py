@@ -14,6 +14,7 @@ import datetime
 import qrcode
 from PIL import Image
 import matplotlib.pyplot as plt
+import xlsxwriter
 
 
 
@@ -275,6 +276,38 @@ if pagina == "Programación de Ingresos":
 
         st.altair_chart(chart, use_container_width=True)
 
+                       # ————— Exportar a Excel —————
+        st.markdown("")
+
+        output = io.BytesIO()
+
+        # 1. Preparar hoja de datos brutos
+        df_brutos_export = df_i.drop(columns=['presupuesto_inicial', 'presupuesto_definitivo'], errors='ignore').copy()
+        df_brutos_export = df_brutos_export.rename(columns={
+            'cod_detalle_sectorial': 'presupuestoinicial',
+            'nom_detalle_sectorial': 'presupuestodefinitivo'
+        })
+
+        # 2. Preparar hoja resumen (sin cambios, ya está en formato)
+        df_resumen_export = resumen[['Ámbito Código','Ámbito Nombre','Presupuesto Inicial','Presupuesto Definitivo']]
+
+        # 3. Preparar hoja histórico nominal vs real
+        df_hist_export = df_sel[['periodo_dt', 'Ingresos Nominales', 'Ingresos Reales']]
+
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_brutos_export.to_excel(writer, index=False, sheet_name='Datos Brutos')
+            df_resumen_export.to_excel(writer, index=False, sheet_name='Resumen')
+            df_hist_export.to_excel(writer, index=False, sheet_name='Histórico')
+
+        st.download_button(
+            label="Excel",
+            data=output.getvalue(),
+            file_name=f"programacion_ingresos_{ent}_{per}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+
+
 elif pagina == "Comparativa Per Cápita":
     st.title("Programación de Ingresos - Comparativa Per Cápita")
 
@@ -441,6 +474,25 @@ elif pagina == "Comparativa Per Cápita":
         st.subheader(f"Valores per cápita por {st.session_state['label'].lower()} en misma categoría")
         st.dataframe(st.session_state['df_cat'], use_container_width=True, hide_index=True)
 
+    # ————— Exportar datos a Excel (previo al informe) —————
+    if 'df_bar_fmt' in st.session_state and 'df_cat' in st.session_state:
+        # ————— Exportar datos a Excel (previo al informe) —————
+        st.markdown("")
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            st.session_state['df_bar_fmt'].to_excel(writer, index=False, sheet_name='Resumen Comparativa')
+            st.session_state['df_cat'].to_excel(writer, index=False, sheet_name=f"{label}s Categoría")
+
+        st.download_button(
+            label="Excel",
+            data=output.getvalue(),
+            file_name=f"comparativa_percapita_{ent}_{periodo}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+
+
     # Generar informe y PDF
     if 'chart' in st.session_state:
         if st.button("Generar Informe y PDF"):
@@ -477,63 +529,87 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
     pdf.add_page()
     pdf.set_auto_page_break(True, 15)
 
+    # ————— Registrar Montserrat —————
+    FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+    pdf.add_font('Montserrat',   '',  os.path.join(FONT_DIR, 'Montserrat-Regular.ttf'),   uni=True)
+    pdf.add_font('Montserrat',   'B', os.path.join(FONT_DIR, 'Montserrat-Bold.ttf'),      uni=True)
+    pdf.add_font('Montserrat',   'I', os.path.join(FONT_DIR, 'Montserrat-Italic.ttf'),    uni=True)
+
     # 1) Logo
     pdf.image("pdigitalazul.png", x=10, y=8, w=60)
     pdf.ln(20)
 
     # 2) Título de variable
-    pdf.set_font("Arial", "B", 14)
+    pdf.set_font("Montserrat", "B", 14)
     pdf.set_x(10)
     pdf.cell(0, 8, st.session_state['cuenta_comparativa'], ln=True, align="C")
     pdf.ln(5)
 
     # 3) Informe
-    pdf.set_font("Arial", "B", 12)
+    pdf.set_font("Montserrat", "B", 12)
     pdf.cell(0, 8, "Informe", ln=True)
-    pdf.set_font("Arial", "", 10)
+    pdf.set_font("Montserrat", "", 10)
     for line in st.session_state['informe'].split("\n"):
         pdf.multi_cell(0, 5, line)
     pdf.ln(5)
 
     # 4) Gráfico con Matplotlib para el PDF
-    pdf.set_font("Arial", "B", 12)
+    pdf.set_font("Montserrat", "B", 12)
     pdf.cell(0, 10, f"Comparativa Per Cápita - {st.session_state['entity']}", ln=True, align="L")
     pdf.ln(5)
 
+    # Preparamos datos
     df_plot = st.session_state['df_bar_fmt'].copy()
+    # 'df_bar_fmt' sólo tiene Tipo y COP per cápita como string,
+    # así que volvemos a los números:
     tipos = [r for r in df_plot['Tipo']]
     valores = [int(r.replace("$","").replace(" ","").replace(",","")) for r in df_plot['COP per cápita']]
 
+    # Creamos figura
     fig, ax = plt.subplots(figsize=(8, 3))
     ax.bar(tipos, valores)
     ax.set_ylabel("COP per cápita")
     ax.set_ylim(0, max(valores) * 1.1)
+    # Creamos figura
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.bar(tipos, valores)
+    ax.set_ylabel("COP per cápita")
+    ax.set_ylim(0, max(valores) * 1.1)
+
+    # Rotamos etiquetas con labelrotation y alineamos con setp
     ax.tick_params(axis="x", labelrotation=30)
     plt.setp(ax.get_xticklabels(), ha="right")
+
+    # Formateamos las etiquetas del eje Y
     ax.yaxis.set_major_formatter(lambda x, pos: f"$ {int(x):,}")
     fig.tight_layout()
 
+    # Guardamos a PNG (fondo blanco sin alpha)
     tmp_fig = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     fig.savefig(tmp_fig.name, dpi=150)
     plt.close(fig)
+
+    # Insertamos en el PDF
     pdf.image(tmp_fig.name, x=10, w=190)
     pdf.ln(20)
 
+
+
     # 5) Tablas
-    pdf.set_font("Arial", "B", 12)
+    pdf.set_font("Montserrat", "B", 12)
     pdf.cell(0, 8, "Valores per cápita", ln=True)
-    pdf.set_font("Arial", "", 10)
+    pdf.set_font("Montserrat", "", 10)
     for _, r in st.session_state['df_bar_fmt'].iterrows():
         pdf.cell(0, 6, f"{r['Tipo']}: {r['COP per cápita']}", ln=True)
     pdf.ln(5)
 
-    pdf.set_font("Arial", "B", 12)
+    pdf.set_font("Montserrat", "B", 12)
     pdf.cell(0, 8, f"Per cápita {st.session_state['label'].lower()}s categoría {st.session_state['cat']}", ln=True)
-    pdf.set_font("Arial", "B", 10)
+    pdf.set_font("Montserrat", "B", 10)
     pdf.cell(80, 6, st.session_state['label'], 1)
     pdf.cell(40, 6, "Per cápita", 1)
     pdf.cell(60, 6, "Valor Absoluto", 1, ln=True)
-    pdf.set_font("Arial", "", 10)
+    pdf.set_font("Montserrat", "", 10)
     for _, r in st.session_state['df_cat'].iterrows():
         pdf.cell(80, 6, r[st.session_state['label']], 1)
         pdf.cell(40, 6, r['Per cápita'], 1)
@@ -541,7 +617,7 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
 
     # 6) Texto + QR
     pdf.ln(10)
-    pdf.set_font("Arial", "I", 10)
+    pdf.set_font("Montserrat", "I", 10)
     pdf.set_x(10)
     pdf.cell(0, 8, "¿Quieres llevar más potencia al desarrollo de tu territorio? Contáctanos", ln=True)
 
@@ -550,6 +626,7 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
     qr.make(fit=True)
     img_qr = qr.make_image(fill_color="#262C60", back_color="white")
     buf = io.BytesIO(); img_qr.save(buf, format="PNG"); buf.seek(0)
+
     tmp_qr = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     tmp_qr.write(buf.read()); tmp_qr.close()
 
@@ -563,7 +640,7 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
     data = pdf.output(dest="S").encode("latin-1")
     st.download_button(
         "📄 Descargar Informe completo en PDF",
-        data=data,
+        data=pdf.output(dest="S").encode("latin-1"),
         file_name=f"reporte_comparativa_{st.session_state['entity']}_{st.session_state['cuenta_comparativa']}.pdf",
         mime="application/pdf"
     )
@@ -796,6 +873,24 @@ elif pagina == "Ejecución de Gastos":
         ).properties(width=700, height=400)
 
         st.altair_chart(chart_sec, use_container_width=True)
+
+                # ————— Exportar a Excel —————
+        st.markdown("")
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_raw.to_excel(writer, index=False, sheet_name='Datos Brutos')
+            resumen.to_excel(writer, index=False, sheet_name='Resumen por Cuenta')
+            consolidado.to_excel(writer, index=False, sheet_name='Por Vigencia')
+            consolidado_secc.to_excel(writer, index=False, sheet_name='Por Sección Presupuestal')
+
+        st.download_button(
+            label="Excel",
+            data=output.getvalue(),
+            file_name=f"ejecucion_gastos_{ent_sel}_{periodo}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
 
                 
 
