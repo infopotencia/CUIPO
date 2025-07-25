@@ -584,7 +584,7 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
     pdf.set_font("Arial", "B", 10)
     pdf.cell(80, 6, st.session_state['label'], 1)
     pdf.cell(40, 6, "Per cápita", 1)
-    pdf.cell(60, 6, "Valor Absoluto", 1, ln=True)
+    pdf.cell(60, 6, "Valor Absoluto (en millones COP)", 1, ln=True)
     pdf.set_font("Arial", "", 10)
     for _, r in st.session_state['df_cat'].iterrows():
         pdf.cell(80, 6, r[st.session_state['label']], 1)
