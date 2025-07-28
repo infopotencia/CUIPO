@@ -276,7 +276,7 @@ if pagina == "Programación de Ingresos":
 
         st.altair_chart(chart, use_container_width=True)
 
-                       # ————— Exportar a Excel —————
+                                       # ————— Exportar a Excel —————
         st.markdown("")
 
         output = io.BytesIO()
@@ -288,16 +288,38 @@ if pagina == "Programación de Ingresos":
             'nom_detalle_sectorial': 'presupuestodefinitivo'
         })
 
-        # 2. Preparar hoja resumen (sin cambios, ya está en formato)
+        # Ordenar por ambito_codigo ascendente
+        if 'ambito_codigo' in df_brutos_export.columns:
+            df_brutos_export = df_brutos_export.sort_values('ambito_codigo', ascending=True)
+
+        # 2. Preparar hoja resumen
         df_resumen_export = resumen[['Ámbito Código','Ámbito Nombre','Presupuesto Inicial','Presupuesto Definitivo']]
 
         # 3. Preparar hoja histórico nominal vs real
         df_hist_export = df_sel[['periodo_dt', 'Ingresos Nominales', 'Ingresos Reales']]
 
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            wb  = writer.book
+
+            # Datos Brutos
             df_brutos_export.to_excel(writer, index=False, sheet_name='Datos Brutos')
+            ws0 = writer.sheets['Datos Brutos']
+            # formato de moneda solo para las dos columnas de presupuesto
+            currency_fmt = wb.add_format({'num_format': '$#,##0.00'})
+            for col_name in ['presupuestoinicial','presupuestodefinitivo']:
+                if col_name in df_brutos_export.columns:
+                    col_idx = df_brutos_export.columns.get_loc(col_name)
+                    ws0.set_column(col_idx, col_idx, None, currency_fmt)
+
+            # Resumen (mantener como antes)
             df_resumen_export.to_excel(writer, index=False, sheet_name='Resumen')
+            ws1 = writer.sheets['Resumen']
+            ws1.set_column(2, 3, None, currency_fmt)
+
+            # Histórico
             df_hist_export.to_excel(writer, index=False, sheet_name='Histórico')
+            ws2 = writer.sheets['Histórico']
+            ws2.set_column(1, 2, None, currency_fmt)
 
         st.download_button(
             label="Excel",
@@ -305,6 +327,8 @@ if pagina == "Programación de Ingresos":
             file_name=f"programacion_ingresos_{ent}_{per}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+
 
 
 
@@ -487,7 +511,7 @@ elif pagina == "Comparativa Per Cápita":
         st.download_button(
             label="Excel",
             data=output.getvalue(),
-            file_name=f"comparativa_percapita_{ent}_{periodo}.xlsx",
+            file_name=f"comparativa_percapita_{ent}_{periodo}_{st.session_state['cuenta_comparativa']}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
@@ -522,6 +546,7 @@ Evita sugerencias, recomendaciones, o valoraciones implícitas sobre si el resul
                 st.session_state['informe'] = resp.choices[0].message.content.strip()
             except openai.error.RateLimitError:
                 st.session_state['informe'] = 'Error: límite API excedido.'
+
     # Mostrar informe y PDF
 if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
     st.markdown(st.session_state['informe'])
@@ -619,6 +644,7 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
         file_name=f"reporte_comparativa_{st.session_state['entity']}_{st.session_state['cuenta_comparativa']}.pdf",
         mime="application/pdf"
     )
+
 
 
 
@@ -849,15 +875,51 @@ elif pagina == "Ejecución de Gastos":
 
         st.altair_chart(chart_sec, use_container_width=True)
 
-                # ————— Exportar a Excel —————
+                        # ————— Exportar a Excel —————
         st.markdown("")
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_raw.to_excel(writer, index=False, sheet_name='Datos Brutos')
+            wb = writer.book
+            # formato moneda
+            currency_fmt = wb.add_format({'num_format': '$#,##0.00'})
+
+            # 1) Datos Brutos
+            df_brutos_exp = df_raw.copy()
+            # orden ascendente por 'cuenta'
+            if 'cuenta' in df_brutos_exp.columns:
+                df_brutos_exp = df_brutos_exp.sort_values('cuenta', ascending=True)
+            df_brutos_exp.to_excel(writer, index=False, sheet_name='Datos Brutos')
+            ws0 = writer.sheets['Datos Brutos']
+            # formatear solo las tres columnas de valor
+            for col in ['compromisos','pagos','obligaciones']:
+                if col in df_brutos_exp.columns:
+                    idx = df_brutos_exp.columns.get_loc(col)
+                    ws0.set_column(idx, idx, None, currency_fmt)
+
+            # 2) Resumen por Cuenta
             resumen.to_excel(writer, index=False, sheet_name='Resumen por Cuenta')
+            ws1 = writer.sheets['Resumen por Cuenta']
+            for col in ['Compromisos','Pagos','Obligaciones']:
+                if col in resumen.columns:
+                    idx = resumen.columns.get_loc(col)
+                    ws1.set_column(idx, idx, None, currency_fmt)
+
+            # 3) Por Vigencia
             consolidado.to_excel(writer, index=False, sheet_name='Por Vigencia')
+            ws2 = writer.sheets['Por Vigencia']
+            for col in ['Compromisos','Pagos','Obligaciones']:
+                if col in consolidado.columns:
+                    idx = consolidado.columns.get_loc(col)
+                    ws2.set_column(idx, idx, None, currency_fmt)
+
+            # 4) Por Sección Presupuestal
             consolidado_secc.to_excel(writer, index=False, sheet_name='Por Sección Presupuestal')
+            ws3 = writer.sheets['Por Sección Presupuestal']
+            for col in ['Compromisos','Pagos','Obligaciones']:
+                if col in consolidado_secc.columns:
+                    idx = consolidado_secc.columns.get_loc(col)
+                    ws3.set_column(idx, idx, None, currency_fmt)
 
         st.download_button(
             label="Excel",
@@ -865,6 +927,7 @@ elif pagina == "Ejecución de Gastos":
             file_name=f"ejecucion_gastos_{ent_sel}_{periodo}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
 
                 
