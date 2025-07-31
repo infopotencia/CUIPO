@@ -83,7 +83,6 @@ pycparser==2.22
 pydantic==2.11.7
 pydantic_core==2.33.2
 pydeck==0.9.1
-pywin32
 pygeoif==1.5.1
 Pygments==2.19.2
 pykml==0.2.0
