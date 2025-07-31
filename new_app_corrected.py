@@ -397,7 +397,7 @@ elif pagina == "Comparativa Per Cápita":
     )
 
     # Ejecutar comparativa
-    if st.button("Ejecutar comparativa", key="btn_ejecutar_comp"):
+    if st.sidebar.button("Ejecutar comparativa", key="btn_ejecutar_comp"):
         # Limpiar informe previo
         if 'informe' in st.session_state:
             del st.session_state['informe']
@@ -454,7 +454,7 @@ elif pagina == "Comparativa Per Cápita":
             labelLimit=200,
             titleAngle=0
         )
-    ),
+    ), 
     y=alt.Y(
         'Value:Q',
         title='COP per cápita',
@@ -644,6 +644,7 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
         file_name=f"reporte_comparativa_{st.session_state['entity']}_{st.session_state['cuenta_comparativa']}.pdf",
         mime="application/pdf"
     )
+
 
 
 
