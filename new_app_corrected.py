@@ -17,81 +17,6 @@ import matplotlib.pyplot as plt
 import xlsxwriter
 
 
-# CSS para posicionar el selector
-st.markdown("""
-    <style>
-    div[data-testid="column"]:has(div[data-testid="stRadio"]) {
-        position: absolute;
-        top: 10px;
-        right: 70px; /* Ajusta según donde quieras que quede */
-        background-color: transparent;
-        z-index: 9999;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-modo = st.radio(
-    "Modo", 
-    ["🌙", "☀️"], 
-    horizontal=True, 
-    label_visibility="collapsed"
-)
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-# Estilos para modo oscuro
-estilo_oscuro = """
-<style>
-    body {
-        background-color: #252c64;
-        color: #ffffff;
-    }
-    .stApp {
-        background-color: #252c64;
-        color: #ffffff;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #556aa6;
-    }
-    .stButton>button {
-        background-color: #ffffff;
-        color: #252c64;
-        border-radius: 8px;
-        border: none;
-    }
-</style>
-"""
-
-# Estilos para modo claro
-estilo_claro = """
-<style>
-    body {
-        background-color: #ffffff;
-        color: #252c64;
-    }
-    .stApp {
-        background-color: #ffffff;
-        color: #252c64;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #d6d9f3;
-    }
-    .stButton>button {
-        background-color: #252c64;
-        color: #ffffff;
-        border-radius: 8px;
-        border: none;
-    }
-</style>
-"""
-
-# Aplicar estilos según selección
-if modo == "🌙":
-    st.markdown(estilo_oscuro, unsafe_allow_html=True)
-else:
-    st.markdown(estilo_claro, unsafe_allow_html=True)
-
-
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
 
@@ -1022,6 +947,7 @@ elif pagina == "Ejecución de Gastos":
 
 
     
+
 
 
 
