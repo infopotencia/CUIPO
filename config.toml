@@ -1,0 +1,5 @@
+[theme]
+primaryColor = "#ffffff"            # Blanco - color principal (botones, sliders)
+backgroundColor = "#252c64"         # Azul oscuro - fondo principal
+secondaryBackgroundColor = "#556aa6" # Azul intermedio - fondo lateral o paneles
+textColor = "#ffffff"               # Blanco - color del texto
