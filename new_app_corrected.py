@@ -74,7 +74,7 @@ if modo == "🌙 Oscuro":
     st.markdown(estilo_oscuro, unsafe_allow_html=True)
 else:
     st.markdown(estilo_claro, unsafe_allow_html=True)
-----------------------------------------------------------
+
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
 
@@ -1005,6 +1005,7 @@ elif pagina == "Ejecución de Gastos":
 
 
     
+
 
 
 
