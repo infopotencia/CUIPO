@@ -17,7 +17,64 @@ import matplotlib.pyplot as plt
 import xlsxwriter
 
 
+# Título de la app (opcional)
+st.title("🌗 CUIPO | API con modo claro/oscuro")
 
+# Selector de modo
+modo = st.radio("Selecciona el modo de color:", ["🌙 Oscuro", "☀️ Claro"], horizontal=True)
+
+# Estilos para modo oscuro
+estilo_oscuro = """
+<style>
+    body {
+        background-color: #252c64;
+        color: #ffffff;
+    }
+    .stApp {
+        background-color: #252c64;
+        color: #ffffff;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #556aa6;
+    }
+    .stButton>button {
+        background-color: #ffffff;
+        color: #252c64;
+        border-radius: 8px;
+        border: none;
+    }
+</style>
+"""
+
+# Estilos para modo claro
+estilo_claro = """
+<style>
+    body {
+        background-color: #ffffff;
+        color: #252c64;
+    }
+    .stApp {
+        background-color: #ffffff;
+        color: #252c64;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #d6d9f3;
+    }
+    .stButton>button {
+        background-color: #252c64;
+        color: #ffffff;
+        border-radius: 8px;
+        border: none;
+    }
+</style>
+"""
+
+# Aplicar estilos según la selección
+if modo == "🌙 Oscuro":
+    st.markdown(estilo_oscuro, unsafe_allow_html=True)
+else:
+    st.markdown(estilo_claro, unsafe_allow_html=True)
+----------------------------------------------------------
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
 
