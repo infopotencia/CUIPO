@@ -17,9 +17,6 @@ import matplotlib.pyplot as plt
 import xlsxwriter
 
 
-# Título de la app (opcional)
-st.title("🌗 CUIPO | API con modo claro/oscuro")
-
 # Selector de modo
 modo = st.radio("Selecciona el modo de color:", ["🌙 Oscuro", "☀️ Claro"], horizontal=True)
 
@@ -1005,6 +1002,7 @@ elif pagina == "Ejecución de Gastos":
 
 
     
+
 
 
 
