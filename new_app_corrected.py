@@ -17,18 +17,17 @@ import matplotlib.pyplot as plt
 import xlsxwriter
 
 
-# Selector de modo dentro de un contenedor flotante
+# CSS para posicionar el selector
 st.markdown("""
     <style>
-    .modo-container {
+    div[data-testid="column"]:has(div[data-testid="stRadio"]) {
         position: absolute;
         top: 10px;
-        right: 80px; /* un poco a la izquierda del botón Share */
+        right: 70px; /* Ajusta según donde quieras que quede */
         background-color: transparent;
         z-index: 9999;
     }
     </style>
-    <div class="modo-container">
 """, unsafe_allow_html=True)
 
 modo = st.radio(
@@ -1023,6 +1022,7 @@ elif pagina == "Ejecución de Gastos":
 
 
     
+
 
 
 
