@@ -17,8 +17,28 @@ import matplotlib.pyplot as plt
 import xlsxwriter
 
 
-# Selector de modo
-modo = st.radio("Selecciona el modo de color:", ["🌙 Oscuro", "☀️ Claro"], horizontal=True)
+# Selector de modo dentro de un contenedor flotante
+st.markdown("""
+    <style>
+    .modo-container {
+        position: absolute;
+        top: 10px;
+        right: 80px; /* un poco a la izquierda del botón Share */
+        background-color: transparent;
+        z-index: 9999;
+    }
+    </style>
+    <div class="modo-container">
+""", unsafe_allow_html=True)
+
+modo = st.radio(
+    "Modo", 
+    ["🌙", "☀️"], 
+    horizontal=True, 
+    label_visibility="collapsed"
+)
+
+st.markdown("</div>", unsafe_allow_html=True)
 
 # Estilos para modo oscuro
 estilo_oscuro = """
@@ -66,11 +86,12 @@ estilo_claro = """
 </style>
 """
 
-# Aplicar estilos según la selección
-if modo == "🌙 Oscuro":
+# Aplicar estilos según selección
+if modo == "🌙":
     st.markdown(estilo_oscuro, unsafe_allow_html=True)
 else:
     st.markdown(estilo_claro, unsafe_allow_html=True)
+
 
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
@@ -1002,6 +1023,7 @@ elif pagina == "Ejecución de Gastos":
 
 
     
+
 
 
 
