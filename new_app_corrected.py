@@ -16,7 +16,70 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import xlsxwriter
 
+# === COMPETITIVIDAD 2024 (BEGIN) ===
+# Utilidad + datos para devolver el puesto por ciudad capital
+import unicodedata
+from typing import Optional
+from fastapi import Query, HTTPException
+from pydantic import BaseModel
 
+def _norm(s: str) -> str:
+    s = s or ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower().strip()
+    s = s.replace(" d.c.", " dc").replace(" d.c", " dc").replace(".", "")
+    s = s.replace(" am", "")  # quitar "AM" de áreas metropolitanas
+    s = " ".join(s.split())
+    return s
+
+_RANK_2024 = {
+    _norm("Bogotá D.C."): 1,
+    _norm("Medellín AM"): 2,
+    _norm("Tunja"): 3,
+    _norm("Cali AM"): 4,
+    _norm("Manizales AM"): 5,
+    _norm("Bucaramanga AM"): 6,
+    _norm("Pereira AM"): 7,
+    _norm("Barranquilla AM"): 8,
+    _norm("Popayán"): 9,
+    _norm("Armenia"): 10,
+    _norm("Cartagena"): 11,
+    _norm("Neiva"): 12,
+    _norm("Ibagué"): 13,
+    _norm("Pasto"): 14,
+    _norm("Santa Marta"): 15,
+    _norm("Yopal"): 16,
+    _norm("Cúcuta AM"): 17,
+    _norm("Montería"): 18,
+    _norm("Villavicencio"): 19,
+    _norm("Valledupar"): 20,
+    _norm("San Andrés"): 21,
+    _norm("Florencia"): 22,
+    _norm("Sincelejo"): 23,
+    _norm("Riohacha"): 24,
+    _norm("Quibdó"): 25,
+    _norm("Arauca"): 26,
+    _norm("Mocoa"): 27,
+    _norm("San José del Guaviare"): 28,
+    _norm("Leticia"): 29,
+    _norm("Puerto Carreño"): 30,
+    _norm("Inírida"): 31,
+    _norm("Mitú"): 32,
+}
+
+def get_rank_ciudad_2024(ciudad: str) -> Optional[int]:
+    """Devuelve el puesto 2024 de la ciudad capital dada; None si no está."""
+    return _RANK_2024.get(_norm(ciudad))
+
+# Modelo de respuesta
+class RankCiudadResponse(BaseModel):
+    ciudad: str
+    rank_2024: int
+    year: int = 2024
+
+# === COMPETITIVIDAD 2024 (END) ===
+ 
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
 
@@ -929,6 +992,16 @@ elif pagina == "Ejecución de Gastos":
         )
 
 
+# === ENDPOINT COMPETITIVIDAD (BEGIN) ===
+@app.get("/competitividad/rank", response_model=RankCiudadResponse, tags=["Competitividad"])
+async def obtener_rank_ciudad(
+    ciudad: str = Query(..., description="Ciudad capital, ej. 'Santa Marta'"),
+):
+    rank = get_rank_ciudad_2024(ciudad)
+    if rank is None:
+        raise HTTPException(status_code=404, detail=f"No hay ranking 2024 para '{ciudad}'.")
+    return RankCiudadResponse(ciudad=ciudad, rank_2024=rank)
+# === ENDPOINT COMPETITIVIDAD (END) ===
 
                 
 
@@ -947,6 +1020,7 @@ elif pagina == "Ejecución de Gastos":
 
 
     
+
 
 
 
