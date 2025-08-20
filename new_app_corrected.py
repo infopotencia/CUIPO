@@ -209,13 +209,13 @@ if pagina == "Programación de Ingresos":
     mun_dict = dict(zip(df_ent['nombre_entidad'], df_ent['codigo_entidad']))
     ent = st.sidebar.selectbox(f"{label}:", list(mun_dict.keys()))
     cod_ent = mun_dict[ent]
- 
- # Mostrar ranking si la ciudad elegida está en la lista de competitividad
-rank = get_rank(ent)
-if rank:
-    st.sidebar.markdown(f"🏆 Puesto en Índice de Competitividad 2024: **{rank}**")
-else:
-    st.sidebar.markdown("ℹ️ Esta ciudad no tiene ranking en el índice de competitividad 2024")
+
+    rank = get_rank(ent)
+    if rank:
+        st.sidebar.markdown(f"🏆 Puesto en Índice de Competitividad 2024: **{rank}**")
+    else:
+        st.sidebar.markdown("ℹ️ Esta ciudad no tiene ranking en el índice de competitividad 2024")
+
 
 
     # Selección de periodo (filtrado por año y trimestres completos)
@@ -1000,6 +1000,7 @@ elif pagina == "Ejecución de Gastos":
 
 
     
+
 
 
 
