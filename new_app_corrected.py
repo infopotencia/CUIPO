@@ -74,6 +74,53 @@ st.sidebar.markdown(f"""
 # ------------------------------------------
 # Funciones
 # ------------------------------------------
+import unicodedata
+
+def _norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower().strip()
+    s = s.replace(" d.c.", " dc").replace(".", "").replace(" am", "")
+    return s
+
+RANKING_2024 = {
+    _norm("Bogotá D.C."): 1,
+    _norm("Medellín AM"): 2,
+    _norm("Tunja"): 3,
+    _norm("Cali AM"): 4,
+    _norm("Manizales AM"): 5,
+    _norm("Bucaramanga AM"): 6,
+    _norm("Pereira AM"): 7,
+    _norm("Barranquilla AM"): 8,
+    _norm("Popayán"): 9,
+    _norm("Armenia"): 10,
+    _norm("Cartagena"): 11,
+    _norm("Neiva"): 12,
+    _norm("Ibagué"): 13,
+    _norm("Pasto"): 14,
+    _norm("Santa Marta"): 15,
+    _norm("Yopal"): 16,
+    _norm("Cúcuta AM"): 17,
+    _norm("Montería"): 18,
+    _norm("Villavicencio"): 19,
+    _norm("Valledupar"): 20,
+    _norm("San Andrés"): 21,
+    _norm("Florencia"): 22,
+    _norm("Sincelejo"): 23,
+    _norm("Riohacha"): 24,
+    _norm("Quibdó"): 25,
+    _norm("Arauca"): 26,
+    _norm("Mocoa"): 27,
+    _norm("San José del Guaviare"): 28,
+    _norm("Leticia"): 29,
+    _norm("Puerto Carreño"): 30,
+    _norm("Inírida"): 31,
+    _norm("Mitú"): 32,
+}
+
+def get_rank(ciudad: str):
+    return RANKING_2024.get(_norm(ciudad))
+
 @st.cache_data(ttl=600)
 def cargar_tablas_control():
     xls = pd.ExcelFile("Tablas Control.xlsx")
@@ -162,6 +209,14 @@ if pagina == "Programación de Ingresos":
     mun_dict = dict(zip(df_ent['nombre_entidad'], df_ent['codigo_entidad']))
     ent = st.sidebar.selectbox(f"{label}:", list(mun_dict.keys()))
     cod_ent = mun_dict[ent]
+ 
+ # Mostrar ranking si la ciudad elegida está en la lista de competitividad
+rank = get_rank(ent)
+if rank:
+    st.sidebar.markdown(f"🏆 Puesto en Índice de Competitividad 2024: **{rank}**")
+else:
+    st.sidebar.markdown("ℹ️ Esta ciudad no tiene ranking en el índice de competitividad 2024")
+
 
     # Selección de periodo (filtrado por año y trimestres completos)
     import datetime
@@ -945,6 +1000,7 @@ elif pagina == "Ejecución de Gastos":
 
 
     
+
 
 
 
