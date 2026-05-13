@@ -16,7 +16,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import xlsxwriter
 
- 
+
+
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
 
@@ -74,53 +75,6 @@ st.sidebar.markdown(f"""
 # ------------------------------------------
 # Funciones
 # ------------------------------------------
-import unicodedata
-
-def _norm(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    s = s.lower().strip()
-    s = s.replace(" d.c.", " dc").replace(".", "").replace(" am", "")
-    return s
-
-RANKING_2024 = {
-    _norm("Bogotá D.C."): 1,
-    _norm("Medellín AM"): 2,
-    _norm("Tunja"): 3,
-    _norm("Cali AM"): 4,
-    _norm("Manizales AM"): 5,
-    _norm("Bucaramanga AM"): 6,
-    _norm("Pereira AM"): 7,
-    _norm("Barranquilla AM"): 8,
-    _norm("Popayán"): 9,
-    _norm("Armenia"): 10,
-    _norm("Cartagena"): 11,
-    _norm("Neiva"): 12,
-    _norm("Ibagué"): 13,
-    _norm("Pasto"): 14,
-    _norm("Santa Marta"): 15,
-    _norm("Yopal"): 16,
-    _norm("Cúcuta AM"): 17,
-    _norm("Montería"): 18,
-    _norm("Villavicencio"): 19,
-    _norm("Valledupar"): 20,
-    _norm("San Andrés"): 21,
-    _norm("Florencia"): 22,
-    _norm("Sincelejo"): 23,
-    _norm("Riohacha"): 24,
-    _norm("Quibdó"): 25,
-    _norm("Arauca"): 26,
-    _norm("Mocoa"): 27,
-    _norm("San José del Guaviare"): 28,
-    _norm("Leticia"): 29,
-    _norm("Puerto Carreño"): 30,
-    _norm("Inírida"): 31,
-    _norm("Mitú"): 32,
-}
-
-def get_rank(ciudad: str):
-    return RANKING_2024.get(_norm(ciudad))
-
 @st.cache_data(ttl=600)
 def cargar_tablas_control():
     xls = pd.ExcelFile("Tablas Control.xlsx")
@@ -169,6 +123,25 @@ def obtener_datos_gastos(codigo_entidad, periodo):
         st.warning(f"No se pudo obtener la información de la API: {e}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=600, show_spinner=False)
+def obtener_ejecucion_ingresos(codigo_entidad, periodo):
+    codigo_entidad = str(int(float(codigo_entidad)))
+    url = "https://www.datos.gov.co/resource/9axr-9gnb.csv"
+    params = {
+        "$where": f"codigo_entidad='{codigo_entidad}' AND periodo='{periodo}'",
+        "$limit": 100000
+    }
+    try:
+        r = requests.get(url, params=params, timeout=60)
+        r.raise_for_status()
+        df = pd.read_csv(io.StringIO(r.text))
+        if df.empty or df.isna().all().all():
+            return pd.DataFrame()
+        return df
+    except Exception as e:
+        st.warning(f"No se pudo obtener datos de ejecución de ingresos: {e}")
+        return pd.DataFrame()
+
 @st.cache_data(ttl=86400)
 def obtener_resumen_wikipedia(municipio: str, departamento: str) -> str:
     query = f"{municipio}, {departamento}"
@@ -189,7 +162,7 @@ df_mun, df_dep, df_per, df_cuentas = cargar_tablas_control()
 
 pagina = st.sidebar.selectbox(
     "Selecciona una página:",
-    ["Programación de Ingresos", "Comparativa Per Cápita", "Ejecución de Gastos"]
+    ["Programación de Ingresos", "Comparativa Per Cápita", "Ejecución de Gastos", "Ejecución de Ingresos"]
 )
 
 
@@ -209,14 +182,6 @@ if pagina == "Programación de Ingresos":
     mun_dict = dict(zip(df_ent['nombre_entidad'], df_ent['codigo_entidad']))
     ent = st.sidebar.selectbox(f"{label}:", list(mun_dict.keys()))
     cod_ent = mun_dict[ent]
-
-    rank = get_rank(ent)
-    if rank:
-        st.sidebar.markdown(f"🏆 Puesto en Índice de Competitividad 2024: **{rank}**")
-    else:
-        st.sidebar.markdown("ℹ️ Esta ciudad no tiene ranking en el índice de competitividad 2024")
-
-
 
     # Selección de periodo (filtrado por año y trimestres completos)
     import datetime
@@ -451,7 +416,7 @@ elif pagina == "Comparativa Per Cápita":
     )
 
     # Ejecutar comparativa
-    if st.sidebar.button("Ejecutar comparativa", key="btn_ejecutar_comp"):
+    if st.button("Ejecutar comparativa", key="btn_ejecutar_comp"):
         # Limpiar informe previo
         if 'informe' in st.session_state:
             del st.session_state['informe']
@@ -508,7 +473,7 @@ elif pagina == "Comparativa Per Cápita":
             labelLimit=200,
             titleAngle=0
         )
-    ), 
+    ),
     y=alt.Y(
         'Value:Q',
         title='COP per cápita',
@@ -704,33 +669,79 @@ if pagina == "Comparativa Per Cápita" and 'informe' in st.session_state:
 
 
 
-
 # ===============================
 # Página: Ejecución de Gastos
 # ===============================
 elif pagina == "Ejecución de Gastos":
     st.title("Ejecución de Gastos")
 
+    # ════════════════════════════════════════════════════════════════════════
+    # HELPERS GENERALES
+    # ════════════════════════════════════════════════════════════════════════
+    def fmt_mm(valor_pesos):
+        try:
+            valor_pesos = float(valor_pesos)
+        except Exception:
+            valor_pesos = 0.0
+        m = valor_pesos / 1e6
+        if abs(m) >= 1000:
+            return f"$ {m/1000:,.1f} MM"
+        return f"$ {m:,.1f} M"
+
+    def pct(valor, base):
+        try:
+            valor = float(valor)
+            base = float(base)
+            return round(valor / base * 100, 1) if base > 0 else 0.0
+        except Exception:
+            return 0.0
+
+    def safe_div(num, den):
+        try:
+            num = float(num)
+            den = float(den)
+            return round(num / den * 100, 1) if den > 0 else 0.0
+        except Exception:
+            return 0.0
+
     def format_cop(x):
         try:
             return f"$ {float(x):,.0f}"
-        except:
+        except Exception:
             return "$ 0"
 
-    nivel = st.sidebar.selectbox("Selecciona el nivel", ["Municipios", "Gobernaciones"])
+    def limpiar_texto(x):
+        return "" if pd.isna(x) else str(x).strip()
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SIDEBAR: ENTIDAD Y PERIODO
+    # ════════════════════════════════════════════════════════════════════════
+    nivel = st.sidebar.selectbox(
+        "Selecciona el nivel geográfico:",
+        ["Municipios", "Gobernaciones"],
+        key="niv_gastos"
+    )
+
     if nivel == "Municipios":
         departamentos = sorted(df_mun["departamento"].dropna().astype(str).unique())
-        dep_sel = st.sidebar.selectbox("Selecciona el departamento", departamentos)
+        dep_sel = st.sidebar.selectbox("Departamento:", departamentos, key="dep_gastos")
         df_entidades = df_mun[df_mun["departamento"] == dep_sel]
-        label_ent = "Selecciona el municipio"
+        label_ent = "Municipio"
     else:
         df_entidades = df_dep
-        label_ent = "Selecciona la gobernación"
+        label_ent = "Gobernación"
 
-    ent_sel = st.sidebar.selectbox(label_ent, df_entidades['nombre_entidad'].dropna().astype(str).unique().tolist())
-    codigo_ent = df_entidades.loc[df_entidades['nombre_entidad'] == ent_sel, 'codigo_entidad'].iloc[0]
+    ent_sel = st.sidebar.selectbox(
+        f"{label_ent}:",
+        df_entidades["nombre_entidad"].dropna().astype(str).unique().tolist(),
+        key="ent_gastos"
+    )
 
-     # Selección de periodo (filtrado por años y trimestres completos)
+    codigo_ent = df_entidades.loc[
+        df_entidades["nombre_entidad"] == ent_sel,
+        "codigo_entidad"
+    ].iloc[0]
+
     import datetime
     today = datetime.date.today()
     current_year = today.year
@@ -738,10 +749,618 @@ elif pagina == "Ejecución de Gastos":
     current_quarter = (current_month - 1) // 3 + 1
     last_full_quarter = current_quarter - 1 if current_quarter > 1 else 0
 
-    df_per['periodo_str'] = df_per['periodo'].astype(str).str.zfill(8)
-    df_per['year']       = df_per['periodo_str'].str[:4].astype(int)
-    df_per['month']      = df_per['periodo_str'].str[4:6].astype(int)
+    df_per["periodo_str"] = df_per["periodo"].astype(str).str.zfill(8)
+    df_per["year"] = df_per["periodo_str"].str[:4].astype(int)
+    df_per["month"] = df_per["periodo_str"].str[4:6].astype(int)
 
+    df_per_filt = df_per[df_per["year"] <= current_year].copy()
+    if last_full_quarter > 0:
+        df_per_filt = df_per_filt[~(
+            (df_per_filt["year"] == current_year) &
+            (df_per_filt["month"] > last_full_quarter * 3)
+        )]
+    else:
+        df_per_filt = df_per_filt[df_per_filt["year"] < current_year]
+
+    df_per_filt = df_per_filt.sort_values("periodo")
+    per_dict = dict(zip(df_per_filt["periodo_label"], df_per_filt["periodo"]))
+    per_lab = st.sidebar.selectbox("Período:", list(per_dict.keys()), key="per_gastos")
+    periodo = str(per_dict[per_lab])
+
+    if st.sidebar.button("Cargar datos de gastos", key="btn_cargar_gastos"):
+        with st.spinner("Obteniendo datos desde la API..."):
+            df_gastos = obtener_datos_gastos(codigo_ent, periodo)
+            st.session_state["df_gastos"] = df_gastos
+
+    if "df_gastos" not in st.session_state:
+        st.info("Selecciona una entidad, un período y pulsa 'Cargar datos de gastos'.")
+        st.stop()
+
+    df_raw = st.session_state["df_gastos"].copy()
+    if df_raw.empty:
+        st.warning(f"No se encontraron datos de gastos para la entidad '{ent_sel}' y período '{per_lab}'.")
+        st.stop()
+
+    with st.expander("Datos brutos", expanded=False):
+        st.dataframe(df_raw, use_container_width=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # LIMPIEZA INICIAL
+    # ════════════════════════════════════════════════════════════════════════
+    columnas_necesarias = [
+        "cuenta", "nombre_cuenta", "nom_seccion_presupuestal",
+        "compromisos", "obligaciones", "pagos", "nom_vigencia_del_gasto"
+    ]
+    faltantes = [c for c in columnas_necesarias if c not in df_raw.columns]
+    if faltantes:
+        st.error(f"Faltan columnas necesarias en la base de gastos: {faltantes}")
+        st.stop()
+
+    for col in ["compromisos", "obligaciones", "pagos"]:
+        df_raw[col] = pd.to_numeric(df_raw[col], errors="coerce").fillna(0.0)
+
+    df_raw["cuenta"] = df_raw["cuenta"].astype(str).str.strip()
+    df_raw["nombre_cuenta"] = df_raw["nombre_cuenta"].apply(limpiar_texto)
+    df_raw["nom_seccion_presupuestal"] = df_raw["nom_seccion_presupuestal"].apply(limpiar_texto)
+    df_raw["vigencia_norm"] = (
+        df_raw["nom_vigencia_del_gasto"].fillna("").astype(str).str.strip().str.upper()
+    )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # CONTROLES ANALÍTICOS
+    # ════════════════════════════════════════════════════════════════════════
+    metricas = {"Compromisos": "compromisos", "Obligaciones": "obligaciones", "Pagos": "pagos"}
+    metrica_label = st.sidebar.selectbox("Métrica principal:", list(metricas.keys()), index=0, key="meta_gastos")
+    metrica = metricas[metrica_label]
+
+    vigs = sorted([v for v in df_raw["vigencia_norm"].dropna().unique() if str(v).strip() != ""])
+    if "VIGENCIA ACTUAL" in vigs:
+        vigencias_disponibles = ["VIGENCIA ACTUAL"] + [v for v in vigs if v != "VIGENCIA ACTUAL"]
+    else:
+        vigencias_disponibles = vigs if vigs else ["VIGENCIA ACTUAL"]
+
+    vigencia_analisis = st.sidebar.selectbox(
+        "Vigencia para análisis principal:", vigencias_disponibles, index=0, key="vig_main_gastos"
+    )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # BASE AGREGADA Y ÁRBOL JERÁRQUICO
+    # ════════════════════════════════════════════════════════════════════════
+    base = df_raw.groupby(
+        ["vigencia_norm", "cuenta", "nombre_cuenta"], as_index=False
+    )[["compromisos", "obligaciones", "pagos"]].sum()
+
+    def nivel_cuenta(c):
+        return len(str(c).split("."))
+
+    def cuenta_padre(c):
+        partes = str(c).rsplit(".", 1)
+        return partes[0] if len(partes) > 1 else None
+
+    base["nivel_cuenta"] = base["cuenta"].apply(nivel_cuenta)
+    base["cuenta_padre"] = base["cuenta"].apply(cuenta_padre)
+
+    hijas_count = (
+        base.dropna(subset=["cuenta_padre"])
+        .groupby(["vigencia_norm", "cuenta_padre"], as_index=False)["cuenta"]
+        .count()
+        .rename(columns={"cuenta_padre": "cuenta", "cuenta": "n_hijas_inmediatas"})
+    )
+
+    base = base.merge(hijas_count, how="left", on=["vigencia_norm", "cuenta"])
+    base["n_hijas_inmediatas"] = base["n_hijas_inmediatas"].fillna(0).astype(int)
+    base["tiene_hijas"] = base["n_hijas_inmediatas"] > 0
+    base["es_hoja"] = ~base["tiene_hijas"]
+
+    def valor_exacto(df, codigo, col_metrica, vigencia="VIGENCIA ACTUAL"):
+        temp = df[(df["vigencia_norm"] == vigencia) & (df["cuenta"] == codigo)]
+        return float(temp[col_metrica].sum()) if not temp.empty else 0.0
+
+    def fila_exacta(df, codigo, vigencia="VIGENCIA ACTUAL"):
+        return df[(df["vigencia_norm"] == vigencia) & (df["cuenta"] == codigo)].copy()
+
+    def hijas_inmediatas(df, codigo_padre, vigencia="VIGENCIA ACTUAL"):
+        return df[(df["vigencia_norm"] == vigencia) & (df["cuenta_padre"] == codigo_padre)].copy()
+
+    total_gasto = valor_exacto(base, "2", metrica, vigencia_analisis)
+    funcionamiento = valor_exacto(base, "2.1", metrica, vigencia_analisis)
+    deuda = valor_exacto(base, "2.2", metrica, vigencia_analisis)
+    inversion = valor_exacto(base, "2.3", metrica, vigencia_analisis)
+
+    if total_gasto == 0:
+        hijos_2 = hijas_inmediatas(base, "2", vigencia_analisis)
+        if not hijos_2.empty:
+            total_gasto = float(hijos_2[metrica].sum())
+            st.warning(
+                "No se encontró la cuenta exacta '2' para el total de gastos. "
+                "Se usó como respaldo la suma de sus hijas inmediatas. Revise la estructura de cuentas."
+            )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # FUNCIONES VISUALES Y TABLAS ROBUSTAS
+    # ════════════════════════════════════════════════════════════════════════
+    col_valor_tabla = f"Valor seleccionado ({metrica_label})"
+
+    def render_card(titulo, valor, porcentaje, color, extra_text=None):
+        extra_html = f"<div style='font-size:11px;color:#aaa;margin-top:4px;line-height:1.35;'>{extra_text}</div>" if extra_text else ""
+        st.markdown(f"""
+        <div style="background:#1e1e2e;border-left:4px solid {color};border-radius:10px;
+                    padding:16px 18px;margin:6px 0;">
+            <div style="font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">{titulo}</div>
+            <div style="font-size:24px;font-weight:700;color:#fff;margin-bottom:6px;">{fmt_mm(valor)}</div>
+            <div style="font-size:13px;color:{color};font-weight:600;">{porcentaje}% del gasto total</div>
+            {extra_html}
+        </div>
+        """, unsafe_allow_html=True)
+
+    def preparar_df_rubro(df, denominador_total, denominador_grupo=None, nombre_pct_grupo=None, top_n=None):
+        df = df.copy()
+        if df.empty:
+            return df
+        for c in ["compromisos", "obligaciones", "pagos"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+        df["valor_metrica"] = pd.to_numeric(df[metrica], errors="coerce").fillna(0.0)
+        df = df[df["valor_metrica"] > 0].copy()
+        if df.empty:
+            return df
+        df["pct_total"] = df["valor_metrica"].apply(lambda x: pct(x, denominador_total))
+        df["pct_obligado_comprometido"] = df.apply(lambda row: safe_div(row["obligaciones"], row["compromisos"]), axis=1)
+        df["pct_pagado_obligado"] = df.apply(lambda row: safe_div(row["pagos"], row["obligaciones"]), axis=1)
+        df["pct_pagado_comprometido"] = df.apply(lambda row: safe_div(row["pagos"], row["compromisos"]), axis=1)
+        if denominador_grupo is not None and nombre_pct_grupo is not None:
+            df["pct_grupo"] = df["valor_metrica"].apply(lambda x: pct(x, denominador_grupo))
+        df["nombre_corto"] = df["nombre_cuenta"].astype(str).str.upper().str.slice(0, 60)
+        df["valor_millones"] = df["valor_metrica"] / 1e6
+        df["valor_miles_millones"] = df["valor_metrica"] / 1e9
+        df = df.sort_values("valor_metrica", ascending=False).reset_index(drop=True)
+        if top_n is not None:
+            df = df.head(top_n).reset_index(drop=True)
+        return df
+
+    def render_cards_top(df, color, denominador_total, denominador_grupo=None, etiqueta_grupo=None, n_cols=3):
+        if df.empty:
+            return
+        for i in range(0, len(df), n_cols):
+            fila = df.iloc[i:i+n_cols]
+            cols = st.columns(len(fila))
+            for col, (_, row) in zip(cols, fila.iterrows()):
+                nombre = str(row["nombre_cuenta"]).title()
+                valor = row["valor_metrica"]
+                if denominador_grupo is not None and etiqueta_grupo:
+                    texto_pct = f"{pct(valor, denominador_total)}% del total · {pct(valor, denominador_grupo)}% {etiqueta_grupo}"
+                else:
+                    texto_pct = f"{pct(valor, denominador_total)}% del total"
+                with col:
+                    st.markdown(f"""
+                    <div style="background:#1e1e2e;border-left:4px solid {color};border-radius:10px;
+                                padding:14px 16px;margin:6px 0;">
+                        <div style="font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;line-height:1.35;">{nombre}</div>
+                        <div style="font-size:20px;font-weight:700;color:#fff;margin-bottom:6px;">{fmt_mm(valor)}</div>
+                        <div style="font-size:12px;color:{color};">{texto_pct}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+    def render_tabla_rubro(df, etiqueta_nombre, nombre_pct_grupo=None):
+        if df.empty:
+            return pd.DataFrame()
+        columnas = ["cuenta", "nombre_cuenta", "valor_metrica", "pct_total"]
+        if nombre_pct_grupo is not None and "pct_grupo" in df.columns:
+            columnas.append("pct_grupo")
+        columnas += ["compromisos", "obligaciones", "pagos", "pct_obligado_comprometido", "pct_pagado_obligado", "pct_pagado_comprometido"]
+        tabla = df[columnas].copy()
+        nombres = ["Cuenta", etiqueta_nombre, col_valor_tabla, "% del total"]
+        if nombre_pct_grupo is not None and "pct_grupo" in df.columns:
+            nombres.append(nombre_pct_grupo)
+        nombres += ["Compromisos", "Obligaciones", "Pagos", "% obligado / comprometido", "% pagado / obligado", "% pagado / comprometido"]
+        tabla.columns = nombres
+        tabla = tabla.sort_values(col_valor_tabla, ascending=False).reset_index(drop=True)
+        formato = {
+            col_valor_tabla: format_cop,
+            "% del total": lambda x: f"{x:.1f}%",
+            "Compromisos": format_cop,
+            "Obligaciones": format_cop,
+            "Pagos": format_cop,
+            "% obligado / comprometido": lambda x: f"{x:.1f}%",
+            "% pagado / obligado": lambda x: f"{x:.1f}%",
+            "% pagado / comprometido": lambda x: f"{x:.1f}%"
+        }
+        if nombre_pct_grupo is not None and nombre_pct_grupo in tabla.columns:
+            formato[nombre_pct_grupo] = lambda x: f"{x:.1f}%"
+        st.dataframe(tabla.style.format(formato), use_container_width=True, hide_index=True)
+        return tabla
+
+    def render_grafico_rubro(df, color, titulo_x=None):
+        if df.empty:
+            return
+        df_plot = df.copy()
+        df_plot = df_plot[df_plot["valor_miles_millones"] > 0].copy()
+        if df_plot.empty:
+            st.info("No hay valores positivos para graficar.")
+            return
+        df_plot = df_plot.sort_values("valor_miles_millones", ascending=True)
+        max_x = df_plot["valor_miles_millones"].max() * 1.15
+        chart = alt.Chart(df_plot).mark_bar(cornerRadius=4, color=color).encode(
+            x=alt.X("valor_miles_millones:Q", title=titulo_x or f"{metrica_label} (miles de millones COP)", scale=alt.Scale(domain=[0, max_x]), axis=alt.Axis(format="$,.1f")),
+            y=alt.Y("nombre_corto:N", sort="x", title="", axis=alt.Axis(labelLimit=280)),
+            tooltip=[
+                alt.Tooltip("cuenta:N", title="Cuenta"),
+                alt.Tooltip("nombre_cuenta:N", title="Cuenta presupuestal"),
+                alt.Tooltip("valor_miles_millones:Q", format="$,.1f", title="Miles de millones"),
+                alt.Tooltip("pct_total:Q", format=".1f", title="% del total")
+            ]
+        ).properties(height=max(260, len(df_plot) * 42))
+        st.altair_chart(chart, use_container_width=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TARJETAS PRINCIPALES
+    # ════════════════════════════════════════════════════════════════════════
+    st.subheader(f"Resumen del gasto — {ent_sel} | {per_lab}")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        render_card("Total gastos", total_gasto, 100.0, "#4CAF50", extra_text=f"Vigencia: {vigencia_analisis}. Métrica: {metrica_label}.")
+    with c2:
+        render_card("Funcionamiento", funcionamiento, pct(funcionamiento, total_gasto), "#2196F3")
+    with c3:
+        render_card("Servicio de la deuda", deuda, pct(deuda, total_gasto), "#FF9800")
+    with c4:
+        render_card("Inversión", inversion, pct(inversion, total_gasto), "#9C27B0")
+
+    st.caption("La lectura principal usa la vigencia seleccionada y la métrica escogida. Las cuentas se tratan como jerárquicas: se usan cuentas exactas para totales e hijas inmediatas para composiciones, evitando doble conteo.")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # COMPOSICIÓN GENERAL
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Composición general del gasto")
+    comp_general = hijas_inmediatas(base, "2", vigencia_analisis)
+    if comp_general.empty:
+        comp_general = base[(base["vigencia_norm"] == vigencia_analisis) & (base["cuenta"].isin(["2.1", "2.2", "2.3"]))].copy()
+    if comp_general.empty:
+        st.info(f"No se encontraron cuentas inmediatas de la cuenta 2 para {vigencia_analisis}.")
+        tabla_comp_general = pd.DataFrame()
+    else:
+        comp_general = preparar_df_rubro(comp_general, total_gasto)
+        tabla_comp_general = render_tabla_rubro(comp_general, "Rubro")
+        render_grafico_rubro(comp_general, "#4CAF50", f"{metrica_label} (miles de millones COP)")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # FUNCIONAMIENTO
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Principales gastos de funcionamiento")
+    func_df = hijas_inmediatas(base, "2.1", vigencia_analisis)
+    if func_df.empty:
+        st.info("No se encontraron desagregaciones inmediatas para funcionamiento.")
+        tabla_func = pd.DataFrame()
+    else:
+        func_df = preparar_df_rubro(func_df, total_gasto, funcionamiento, "% de funcionamiento", top_n=6)
+        render_cards_top(func_df, "#2196F3", total_gasto, funcionamiento, "de funcionamiento", n_cols=3)
+        tabla_func = render_tabla_rubro(func_df, "Nombre cuenta", "% de funcionamiento")
+        render_grafico_rubro(func_df, "#2196F3", f"{metrica_label} (miles de millones COP)")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # INVERSIÓN
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Principales gastos de inversión")
+    inv_df = hijas_inmediatas(base, "2.3", vigencia_analisis)
+    if inv_df.empty:
+        st.info("No se encontraron desagregaciones inmediatas para inversión.")
+        tabla_inv = pd.DataFrame()
+    else:
+        inv_df = preparar_df_rubro(inv_df, total_gasto, inversion, "% de inversión", top_n=10)
+        render_cards_top(inv_df, "#9C27B0", total_gasto, inversion, "de inversión", n_cols=3)
+        tabla_inv = render_tabla_rubro(inv_df, "Nombre cuenta", "% de inversión")
+        render_grafico_rubro(inv_df, "#9C27B0", f"{metrica_label} (miles de millones COP)")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # DEUDA
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Servicio de la deuda")
+    deuda_df = hijas_inmediatas(base, "2.2", vigencia_analisis)
+    if deuda_df.empty:
+        deuda_df = fila_exacta(base, "2.2", vigencia_analisis)
+    if deuda_df.empty:
+        st.info(f"No se encontraron datos de servicio de la deuda para {vigencia_analisis}.")
+        tabla_deuda = pd.DataFrame()
+    else:
+        deuda_df = preparar_df_rubro(deuda_df, total_gasto, deuda, "% de deuda")
+        tabla_deuda = render_tabla_rubro(deuda_df, "Nombre cuenta", "% de deuda")
+        if len(deuda_df) > 1:
+            render_grafico_rubro(deuda_df, "#FF9800", f"{metrica_label} (miles de millones COP)")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN PRESUPUESTAL
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Gasto por sección presupuestal")
+    secc_df = df_raw[(df_raw["cuenta"] == "2") & (df_raw["nombre_cuenta"].str.upper() == "GASTOS") & (df_raw["vigencia_norm"] == vigencia_analisis)].copy()
+    if secc_df.empty:
+        st.info(f"No se encontraron registros de sección presupuestal para cuenta 2 y {vigencia_analisis}.")
+        secc_table = pd.DataFrame()
+        consolidado_secc = pd.DataFrame()
+    else:
+        consolidado_secc = secc_df.groupby("nom_seccion_presupuestal", as_index=False)[["compromisos", "obligaciones", "pagos"]].sum()
+        consolidado_secc["valor_metrica"] = consolidado_secc[metrica]
+        total_secc = consolidado_secc["valor_metrica"].sum()
+        consolidado_secc["pct_total"] = consolidado_secc["valor_metrica"].apply(lambda x: pct(x, total_secc))
+        consolidado_secc["obligado_comprometido"] = consolidado_secc.apply(lambda row: safe_div(row["obligaciones"], row["compromisos"]), axis=1)
+        consolidado_secc["pagos_obligaciones"] = consolidado_secc.apply(lambda row: safe_div(row["pagos"], row["obligaciones"]), axis=1)
+        consolidado_secc["pagos_compromisos"] = consolidado_secc.apply(lambda row: safe_div(row["pagos"], row["compromisos"]), axis=1)
+        consolidado_secc["seccion_limpia"] = consolidado_secc["nom_seccion_presupuestal"].astype(str).str.replace(r"^.*?-\s*", "", regex=True).str.strip()
+        consolidado_secc = consolidado_secc.sort_values("valor_metrica", ascending=False).reset_index(drop=True)
+        secc_table = consolidado_secc[["seccion_limpia", "valor_metrica", "pct_total", "compromisos", "obligaciones", "pagos", "obligado_comprometido", "pagos_obligaciones", "pagos_compromisos"]].copy()
+        secc_table.columns = ["Sección presupuestal", col_valor_tabla, "% del total", "Compromisos", "Obligaciones", "Pagos", "% obligaciones / compromisos", "% pagos / obligaciones", "% pagos / compromisos"]
+        secc_table = secc_table.sort_values(col_valor_tabla, ascending=False).reset_index(drop=True)
+        st.dataframe(secc_table.style.format({
+            col_valor_tabla: format_cop,
+            "% del total": lambda x: f"{x:.1f}%",
+            "Compromisos": format_cop,
+            "Obligaciones": format_cop,
+            "Pagos": format_cop,
+            "% obligaciones / compromisos": lambda x: f"{x:.1f}%",
+            "% pagos / obligaciones": lambda x: f"{x:.1f}%",
+            "% pagos / compromisos": lambda x: f"{x:.1f}%"
+        }), use_container_width=True, hide_index=True)
+        plot_secc = consolidado_secc.head(15).copy()
+        plot_secc["valor_miles_millones"] = plot_secc["valor_metrica"] / 1e9
+        plot_secc["nombre_corto"] = plot_secc["seccion_limpia"].astype(str).str.slice(0, 60)
+        plot_secc = plot_secc[plot_secc["valor_miles_millones"] > 0].copy()
+        if not plot_secc.empty:
+            plot_secc = plot_secc.sort_values("valor_miles_millones", ascending=True)
+            max_x = plot_secc["valor_miles_millones"].max() * 1.15
+            sec_chart = alt.Chart(plot_secc).mark_bar(cornerRadius=4, color="#607D8B").encode(
+                x=alt.X("valor_miles_millones:Q", title=f"{metrica_label} (miles de millones COP)", scale=alt.Scale(domain=[0, max_x]), axis=alt.Axis(format="$,.1f")),
+                y=alt.Y("nombre_corto:N", sort="x", title="", axis=alt.Axis(labelLimit=280)),
+                tooltip=[alt.Tooltip("seccion_limpia:N", title="Sección"), alt.Tooltip("valor_miles_millones:Q", format="$,.1f", title="Miles de millones"), alt.Tooltip("pct_total:Q", format=".1f", title="% del total")]
+            ).properties(height=max(280, len(plot_secc) * 38))
+            st.altair_chart(sec_chart, use_container_width=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # INDICADORES DE EJECUCIÓN
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Indicadores de ejecución")
+    indicadores = []
+    for nombre, cuenta_codigo in [("Total gastos", "2"), ("Funcionamiento", "2.1"), ("Servicio de deuda", "2.2"), ("Inversión", "2.3")]:
+        comp = valor_exacto(base, cuenta_codigo, "compromisos", vigencia_analisis)
+        obl = valor_exacto(base, cuenta_codigo, "obligaciones", vigencia_analisis)
+        pag = valor_exacto(base, cuenta_codigo, "pagos", vigencia_analisis)
+        indicadores.append({
+            "Rubro": nombre,
+            "Cuenta": cuenta_codigo,
+            "Compromisos": comp,
+            "Obligaciones": obl,
+            "Pagos": pag,
+            "% Obligado / Comprometido": safe_div(obl, comp),
+            "% Pagado / Obligado": safe_div(pag, obl),
+            "% Pagado / Comprometido": safe_div(pag, comp)
+        })
+    df_indicadores = pd.DataFrame(indicadores)
+    st.dataframe(df_indicadores.style.format({
+        "Compromisos": format_cop,
+        "Obligaciones": format_cop,
+        "Pagos": format_cop,
+        "% Obligado / Comprometido": lambda x: f"{x:.1f}%",
+        "% Pagado / Obligado": lambda x: f"{x:.1f}%",
+        "% Pagado / Comprometido": lambda x: f"{x:.1f}%"
+    }), use_container_width=True, hide_index=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # VIGENCIAS Y REZAGOS
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Vigencias y rezagos")
+    vigencia_df = base[(base["cuenta"] == "2") & (base["nombre_cuenta"].str.upper() == "GASTOS")].copy()
+    if vigencia_df.empty:
+        st.info("No hay registros de la cuenta 2 con nombre GASTOS para vigencias.")
+        vigencia_table = pd.DataFrame()
+    else:
+        vigencia_consol = vigencia_df.groupby("vigencia_norm", as_index=False)[["compromisos", "obligaciones", "pagos"]].sum()
+        total_vig_comp = vigencia_consol["compromisos"].sum()
+        vigencia_consol["pct_total"] = vigencia_consol["compromisos"].apply(lambda x: pct(x, total_vig_comp))
+        vigencia_consol["pagos_compromisos"] = vigencia_consol.apply(lambda row: safe_div(row["pagos"], row["compromisos"]), axis=1)
+        orden_map = {"VIGENCIA ACTUAL": 1, "RESERVAS": 2, "CUENTAS POR PAGAR": 3, "VIGENCIAS FUTURAS - VIGENCIA ACTUAL": 4, "VIGENCIAS FUTURAS - RESERVAS": 5}
+        vigencia_consol["orden"] = vigencia_consol["vigencia_norm"].map(orden_map).fillna(99)
+        vigencia_consol = vigencia_consol.sort_values(["orden", "vigencia_norm"]).reset_index(drop=True)
+        vigencia_table = vigencia_consol[["vigencia_norm", "compromisos", "obligaciones", "pagos", "pct_total", "pagos_compromisos"]].copy()
+        vigencia_table.columns = ["Vigencia", "Compromisos", "Obligaciones", "Pagos", "% del total de vigencias", "% Pagos / compromisos"]
+        st.dataframe(vigencia_table.style.format({
+            "Compromisos": format_cop,
+            "Obligaciones": format_cop,
+            "Pagos": format_cop,
+            "% del total de vigencias": lambda x: f"{x:.1f}%",
+            "% Pagos / compromisos": lambda x: f"{x:.1f}%"
+        }), use_container_width=True, hide_index=True)
+        st.caption("Esta sección no se mezcla con la lectura principal de la vigencia seleccionada. Sirve para identificar rezagos, reservas, cuentas por pagar y compromisos asociados a vigencias futuras.")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # HISTÓRICO DEL GASTO
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Histórico del gasto — nominal vs real")
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def obtener_historico_gastos(codigo_entidad):
+        codigo_entidad = str(int(float(codigo_entidad)))
+        cols = "periodo,cuenta,nombre_cuenta,compromisos,pagos,obligaciones,nom_vigencia_del_gasto"
+        params = {"$select": cols, "$where": f"codigo_entidad='{codigo_entidad}'", "$limit": 500000}
+        try:
+            r = requests.get("https://www.datos.gov.co/resource/4f7r-epif.csv", params=params, timeout=90)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+            return df if not df.empty else pd.DataFrame()
+        except Exception as e:
+            st.warning(f"No se pudo obtener el histórico: {e}")
+            return pd.DataFrame()
+
+    with st.spinner("Cargando histórico de gastos..."):
+        df_hist_raw = obtener_historico_gastos(codigo_ent)
+
+    df_serie = pd.DataFrame()
+    if df_hist_raw.empty:
+        st.info("No hay histórico de gasto disponible para la entidad seleccionada.")
+    else:
+        for col in ["compromisos", "obligaciones", "pagos"]:
+            df_hist_raw[col] = pd.to_numeric(df_hist_raw[col], errors="coerce").fillna(0.0)
+        df_hist_raw["cuenta"] = df_hist_raw["cuenta"].astype(str).str.strip()
+        df_hist_raw["nombre_cuenta"] = df_hist_raw["nombre_cuenta"].fillna("").astype(str).str.strip()
+        df_hist_raw["vigencia_norm"] = df_hist_raw["nom_vigencia_del_gasto"].fillna("").astype(str).str.strip().str.upper()
+        df_hist_raw["periodo_str"] = df_hist_raw["periodo"].astype(str).str.zfill(8)
+        df_hist_raw["periodo_dt"] = pd.to_datetime(df_hist_raw["periodo_str"], format="%Y%m%d", errors="coerce")
+        df_hist_raw = df_hist_raw.dropna(subset=["periodo_dt"])
+        df_hist_raw["year"] = df_hist_raw["periodo_dt"].dt.year
+        df_hist_raw["md"] = df_hist_raw["periodo_dt"].dt.strftime("%m%d")
+        df_hist = df_hist_raw[(df_hist_raw["cuenta"] == "2") & (df_hist_raw["nombre_cuenta"].str.upper() == "GASTOS") & (df_hist_raw["vigencia_norm"] == "VIGENCIA ACTUAL")].copy()
+        if df_hist.empty:
+            st.info("No hay histórico para la cuenta 2 GASTOS en Vigencia Actual.")
+        else:
+            df_hist = df_hist.groupby(["year", "periodo", "periodo_dt", "periodo_str"], as_index=False)[["compromisos", "obligaciones", "pagos"]].sum()
+            registros = []
+            anio_actual_hist = int(df_hist["year"].max())
+            for yr in sorted(df_hist["year"].unique()):
+                grp = df_hist[df_hist["year"] == yr].copy()
+                if yr != anio_actual_hist:
+                    candidato = grp[grp["periodo_str"].astype(str).str.endswith("1201")]
+                    if candidato.empty:
+                        candidato = grp.loc[[grp["periodo_dt"].idxmax()]]
+                else:
+                    candidato = grp.loc[[grp["periodo_dt"].idxmax()]]
+                if not candidato.empty:
+                    row = candidato.iloc[-1]
+                    registros.append({"year": int(row["year"]), "periodo": row["periodo_str"], "valor": float(row[metrica])})
+            if registros:
+                df_serie = pd.DataFrame(registros).sort_values("year").reset_index(drop=True)
+                ipc_map = {2019: 97.46, 2020: 100.00, 2021: 111.41, 2022: 126.03, 2023: 137.09, 2024: 144.88, 2025: 151.00, 2026: 157.00}
+                df_serie["ipc"] = df_serie["year"].map(ipc_map)
+                df_serie["nominal_millones"] = df_serie["valor"] / 1e6
+                df_serie["real_millones"] = df_serie.apply(lambda row: row["nominal_millones"] / row["ipc"] * 100 if pd.notna(row["ipc"]) and row["ipc"] > 0 else None, axis=1)
+                df_long = pd.melt(df_serie, id_vars=["year"], value_vars=["nominal_millones", "real_millones"], var_name="serie", value_name="valor_millones").dropna(subset=["valor_millones"])
+                df_long["serie"] = df_long["serie"].map({"nominal_millones": "Nominal", "real_millones": "Real"})
+                chart_hist = alt.Chart(df_long).mark_line(point=True).encode(
+                    x=alt.X("year:O", title="Año"),
+                    y=alt.Y("valor_millones:Q", title="Millones COP", axis=alt.Axis(format="$,.0f")),
+                    color=alt.Color("serie:N", title="Serie"),
+                    tooltip=[alt.Tooltip("year:O", title="Año"), alt.Tooltip("serie:N", title="Serie"), alt.Tooltip("valor_millones:Q", format="$,.1f", title="Millones COP")]
+                ).properties(height=380)
+                st.altair_chart(chart_hist, use_container_width=True)
+                if len(df_serie) >= 2:
+                    inicio = df_serie.iloc[0]
+                    fin = df_serie.iloc[-1]
+                    cambio_nominal = round((fin["valor"] / inicio["valor"] - 1) * 100, 1) if inicio["valor"] > 0 else 0.0
+                    if pd.notna(inicio.get("real_millones")) and pd.notna(fin.get("real_millones")) and inicio["real_millones"] > 0:
+                        cambio_real = round((fin["real_millones"] / inicio["real_millones"] - 1) * 100, 1)
+                        st.markdown(f"**Cambio {metrica_label.lower()} nominal** entre {int(inicio['year'])} y {int(fin['year'])}: **{cambio_nominal:+.1f}%**. **Cambio real:** **{cambio_real:+.1f}%**.")
+                    else:
+                        st.markdown(f"**Cambio {metrica_label.lower()} nominal** entre {int(inicio['year'])} y {int(fin['year'])}: **{cambio_nominal:+.1f}%**.")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ALERTAS TÉCNICAS
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    with st.expander("Alertas técnicas", expanded=False):
+        alertas = []
+        if total_gasto > 0:
+            if pct(inversion, total_gasto) < 30.0:
+                alertas.append("La inversión representa menos del 30% del gasto total. Se recomienda revisar la distribución entre inversión y funcionamiento.")
+            if pct(funcionamiento, total_gasto) > 50.0:
+                alertas.append("El funcionamiento representa más del 50% del gasto total. Puede indicar concentración en gasto corriente.")
+            if pct(deuda, total_gasto) > 15.0:
+                alertas.append("El servicio de la deuda representa más del 15% del gasto total. Debe interpretarse según el calendario presupuestal y las condiciones de la deuda.")
+        total_compromisos = valor_exacto(base, "2", "compromisos", vigencia_analisis)
+        total_pagos = valor_exacto(base, "2", "pagos", vigencia_analisis)
+        if total_compromisos > 0 and safe_div(total_pagos, total_compromisos) < 70.0:
+            alertas.append("El porcentaje de pagos sobre compromisos es menor al 70%. Se recomienda revisar el avance de ejecución financiera.")
+        if "consolidado_secc" in locals() and isinstance(consolidado_secc, pd.DataFrame) and not consolidado_secc.empty:
+            max_concentracion = consolidado_secc["pct_total"].max()
+            if max_concentracion > 40.0:
+                sec_max = consolidado_secc.loc[consolidado_secc["pct_total"].idxmax(), "seccion_limpia"]
+                alertas.append(f"Una sección presupuestal concentra más del 40% del gasto seleccionado: {sec_max} ({max_concentracion:.1f}%). Puede indicar concentración institucional de la ejecución.")
+        if alertas:
+            for a in alertas:
+                st.warning(a)
+        else:
+            st.success("No se activaron alertas técnicas con los umbrales definidos.")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # EXPORTACIÓN A EXCEL
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    output_gastos = io.BytesIO()
+    with pd.ExcelWriter(output_gastos, engine="xlsxwriter") as writer:
+        df_raw.to_excel(writer, index=False, sheet_name="Datos brutos")
+        arbol_cols = ["vigencia_norm", "cuenta", "nombre_cuenta", "nivel_cuenta", "cuenta_padre", "n_hijas_inmediatas", "tiene_hijas", "es_hoja", "compromisos", "obligaciones", "pagos"]
+        exp_arbol = base[[c for c in arbol_cols if c in base.columns]].sort_values(["vigencia_norm", "cuenta"])
+        exp_arbol.to_excel(writer, index=False, sheet_name="Arbol jerarquico")
+        if "tabla_comp_general" in locals() and isinstance(tabla_comp_general, pd.DataFrame) and not tabla_comp_general.empty:
+            tabla_comp_general.to_excel(writer, index=False, sheet_name="Composicion general")
+        if "tabla_func" in locals() and isinstance(tabla_func, pd.DataFrame) and not tabla_func.empty:
+            tabla_func.to_excel(writer, index=False, sheet_name="Funcionamiento")
+        if "tabla_inv" in locals() and isinstance(tabla_inv, pd.DataFrame) and not tabla_inv.empty:
+            tabla_inv.to_excel(writer, index=False, sheet_name="Inversion")
+        if "tabla_deuda" in locals() and isinstance(tabla_deuda, pd.DataFrame) and not tabla_deuda.empty:
+            tabla_deuda.to_excel(writer, index=False, sheet_name="Servicio deuda")
+        if "secc_table" in locals() and isinstance(secc_table, pd.DataFrame) and not secc_table.empty:
+            secc_table.to_excel(writer, index=False, sheet_name="Seccion presupuestal")
+        if "df_indicadores" in locals() and isinstance(df_indicadores, pd.DataFrame) and not df_indicadores.empty:
+            df_indicadores.to_excel(writer, index=False, sheet_name="Indicadores ejecucion")
+        if "vigencia_table" in locals() and isinstance(vigencia_table, pd.DataFrame) and not vigencia_table.empty:
+            vigencia_table.to_excel(writer, index=False, sheet_name="Vigencias rezagos")
+        if "df_serie" in locals() and isinstance(df_serie, pd.DataFrame) and not df_serie.empty:
+            df_serie.to_excel(writer, index=False, sheet_name="Historico")
+        for sheet_name, ws in writer.sheets.items():
+            ws.freeze_panes(1, 0)
+            ws.set_column(0, 0, 18)
+            ws.set_column(1, 1, 35)
+
+    st.download_button(
+        label="Excel",
+        data=output_gastos.getvalue(),
+        file_name=f"ejecucion_gastos_{ent_sel}_{periodo}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+
+elif pagina == "Ejecución de Ingresos":
+    st.title("Ejecución de Ingresos")
+
+    # ── Helpers de formato ────────────────────────────────────────────────
+    def fmt_mm(valor_pesos):
+        m = valor_pesos / 1e6
+        if m >= 1000:
+            return f"$ {m/1000:,.1f} MM"
+        return f"$ {m:,.1f} M"
+
+    def pct(valor, base):
+        return round(valor / base * 100, 1) if base > 0 else 0.0
+
+    # ── Sidebar ───────────────────────────────────────────────────────────
+    nivel = st.sidebar.selectbox("Nivel geográfico:", ["Municipios", "Gobernaciones"], key="niv_ejing")
+    if nivel == "Municipios":
+        deps   = sorted(df_mun["departamento"].dropna().astype(str).unique())
+        dep    = st.sidebar.selectbox("Departamento:", deps, key="dep_ejing")
+        df_ent = df_mun[df_mun["departamento"] == dep]
+        label  = "Municipio"
+    else:
+        df_ent = df_dep
+        label  = "Gobernación"
+
+    mun_dict = dict(zip(df_ent['nombre_entidad'], df_ent['codigo_entidad']))
+    ent      = st.sidebar.selectbox(f"{label}:", list(mun_dict.keys()), key="ent_ejing")
+    cod_ent  = mun_dict[ent]
+
+    import datetime
+    today             = datetime.date.today()
+    current_year      = today.year
+    current_month     = today.month
+    current_quarter   = (current_month - 1) // 3 + 1
+    last_full_quarter = current_quarter - 1 if current_quarter > 1 else 0
+
+    df_per['periodo_str'] = df_per['periodo'].astype(str).str.zfill(8)
+    df_per['year']        = df_per['periodo_str'].str[:4].astype(int)
+    df_per['month']       = df_per['periodo_str'].str[4:6].astype(int)
     df_per_filt = df_per[df_per['year'] <= current_year]
     if last_full_quarter > 0:
         df_per_filt = df_per_filt[~(
@@ -752,240 +1371,676 @@ elif pagina == "Ejecución de Gastos":
         df_per_filt = df_per_filt[df_per_filt['year'] < current_year]
 
     df_per_filt = df_per_filt.sort_values('periodo')
-    per_dict = dict(zip(df_per_filt['periodo_label'], df_per_filt['periodo']))
-    per_lab  = st.sidebar.selectbox("Período:", list(per_dict.keys()), key="per_gastos")
-    periodo  = str(per_dict[per_lab])
+    per_dict    = dict(zip(df_per_filt['periodo_label'], df_per_filt['periodo']))
+    per_lab     = st.sidebar.selectbox("Período:", list(per_dict.keys()), key="per_ejing")
+    periodo     = str(per_dict[per_lab])
 
-    # Botón con key único
-    if st.sidebar.button("Cargar datos de gastos", key="btn_cargar_gastos"):
-        with st.spinner("Obteniendo datos desde la API..."):
-            df_gastos = obtener_datos_gastos(codigo_ent, periodo)
-            st.session_state['df_gastos'] = df_gastos
+    if st.sidebar.button("Cargar datos de ingresos", key="btn_ejing"):
+        with st.spinner("Cargando ejecución de ingresos..."):
+            st.session_state['df_ejing'] = obtener_ejecucion_ingresos(cod_ent, periodo)
 
-    if 'df_gastos' in st.session_state:
-        df_raw = st.session_state['df_gastos']
-        if df_raw.empty:
-            st.warning(
-                f"No se encontraron datos de gastos para la entidad '{ent_sel}' "
-                f"y periodo '{per_lab}'."
-            )
-            st.stop()
+    if 'df_ejing' not in st.session_state:
+        st.stop()
 
-        with st.expander("Datos brutos"):
-            st.dataframe(df_raw.style.format({
-                'compromisos': format_cop,
-                'pagos': format_cop,
-                'obligaciones': format_cop
-            }), use_container_width=True, hide_index=True)
+    df_raw = st.session_state['df_ejing']
+    if df_raw.empty:
+        st.warning(f"No se encontraron datos para '{ent}' en el período '{per_lab}'.")
+        st.stop()
 
-        cuentas_filtro = [
-            "2", "2.1.1", "2.1.2.01.01.001", "2.1.2.01.01.003", "2.1.2.01.01.004",
-            "2.1.2.01.01.005", "2.1.2.01.02", "2.1.2.01.03", "2.1.2.02.01",
-            "2.1.2.02.02", "2.1.3.01", "2.1.3.02.01", "2.1.3.02.02", "2.1.3.02.03",
-            "2.1.3.02.04", "2.1.3.02.05", "2.1.3.02.06", "2.1.3.02.07", "2.1.3.02.08",
-            "2.1.3.02.09", "2.1.3.02.10", "2.1.3.02.11", "2.1.3.02.12", "2.1.3.02.13",
-            "2.1.3.02.14", "2.1.3.02.15", "2.1.3.02.16", "2.1.3.02.17", "2.1.3.02.18",
-            "2.1.3.03", "2.1.3.04", "2.1.3.05.01", "2.1.3.05.04", "2.1.3.05.07",
-            "2.1.3.05.08", "2.1.3.05.09", "2.1.3.06", "2.1.3.07.02", "2.1.3.07.03",
-            "2.1.3.08", "2.1.3.09", "2.1.3.10", "2.1.3.11.02", "2.1.3.11.03",
-            "2.1.3.12", "2.1.3.13", "2.1.3.14", "2.1.4.02", "2.1.4.03", "2.1.4.04",
-            "2.1.4.07", "2.1.5.01", "2.1.5.02", "2.1.6.01", "2.1.6.02", "2.1.6.03",
-            "2.1.7.01", "2.1.7.02", "2.1.7.03", "2.1.7.04", "2.1.7.05", "2.1.7.06",
-            "2.1.7.09", "2.1.8", "2.2.1", "2.2.2", "2.3.1", "2.3.2.01.01.001",
-            "2.3.2.01.01.003", "2.3.2.01.01.004", "2.3.2.01.01.005", "2.3.2.01.02",
-            "2.3.2.01.03", "2.3.2.02.01", "2.3.2.02.02", "2.3.3.01.02", "2.3.3.01.04",
-            "2.3.3.02.01", "2.3.3.02.02", "2.3.3.02.03", "2.3.3.02.04", "2.3.3.02.05",
-            "2.3.3.02.06", "2.3.3.02.07", "2.3.3.02.08", "2.3.3.02.09", "2.3.3.02.10",
-            "2.3.3.02.11", "2.3.3.02.12", "2.3.3.02.13", "2.3.3.02.14", "2.3.3.02.15",
-            "2.3.3.02.16", "2.3.3.02.17", "2.3.3.02.18", "2.3.3.03", "2.3.3.04",
-            "2.3.3.05", "2.3.3.06", "2.3.3.07.01", "2.3.3.07.02", "2.3.3.08",
-            "2.3.3.09", "2.3.3.11", "2.3.3.12", "2.3.3.13", "2.3.3.14", "2.3.4.01",
-            "2.3.4.02", "2.3.4.03", "2.3.4.04", "2.3.4.07", "2.3.4.09", "2.3.5.01",
-            "2.3.5.02", "2.3.6.01", "2.3.6.02", "2.3.6.03", "2.3.7.01", "2.3.7.05",
-            "2.3.7.06", "2.3.8"
-        ]
+    with st.expander("Datos brutos", expanded=False):
+        st.dataframe(df_raw, use_container_width=True)
 
-        df_filtered = df_raw[
-            df_raw['cuenta'].isin(cuentas_filtro) &
-            df_raw['nom_vigencia_del_gasto'].fillna('').str.strip().str.upper().eq('VIGENCIA ACTUAL') &
-            df_raw['nombre_cuenta'].str.upper().ne('GASTOS')
-        ]
+    # ════════════════════════════════════════════════════════════════════════
+    # PASO 1 — Agrupar: una fila por cuenta (elimina duplicados por fuente,
+    #          tercero, detalle sectorial, etc.)
+    # ════════════════════════════════════════════════════════════════════════
+    df_raw['total_recaudo'] = pd.to_numeric(df_raw['total_recaudo'], errors='coerce').fillna(0)
+    df_raw['cuenta']        = df_raw['cuenta'].astype(str).str.strip()
 
-        resumen = df_filtered.groupby(['cuenta', 'nombre_cuenta'], as_index=False)[['compromisos', 'pagos', 'obligaciones']].sum()
-        totales = resumen[['compromisos', 'pagos', 'obligaciones']].sum().to_dict()
-        resumen.loc[len(resumen.index)] = ['', 'TOTAL', totales['compromisos'], totales['pagos'], totales['obligaciones']]
-        resumen[['compromisos','pagos','obligaciones']] = resumen[['compromisos','pagos','obligaciones']] / 1_000_000
-        resumen = resumen.rename(columns={
-            'cuenta': 'Cuenta',
-            'nombre_cuenta': 'Nombre cuenta',
-            'compromisos': 'Compromisos',
-            'pagos': 'Pagos',
-            'obligaciones': 'Obligaciones'
-        })
-        st.subheader("Resumen por cuenta (millones de pesos) - Vigencia Actual")
-        st.dataframe(resumen.style.format({
-            'Compromisos': format_cop,
-            'Pagos': format_cop,
-            'Obligaciones': format_cop
-        }), use_container_width=True, hide_index=True)
+    base = df_raw.groupby(
+        ['cuenta', 'nombre_cuenta'], as_index=False
+    )['total_recaudo'].sum()
 
-        # ========= CONSOLIDADO por tipo de vigencia =========
-        vigencias = ["VIGENCIA ACTUAL","RESERVAS","VIGENCIAS FUTURAS - RESERVAS","CUENTAS POR PAGAR","VIGENCIAS FUTURAS - VIGENCIA ACTUAL"]
-        df_consol = df_raw[df_raw['nombre_cuenta'].str.upper() == 'GASTOS']
-        df_consol = df_consol[df_consol['nom_vigencia_del_gasto'].str.upper().isin(vigencias)]
-        consolidado = df_consol.groupby("nom_vigencia_del_gasto", as_index=False)[['compromisos','pagos','obligaciones']].sum()
-        tot = consolidado[['compromisos','pagos','obligaciones']].sum().to_dict()
-        consolidado.loc[len(consolidado.index)] = ['TOTAL', tot['compromisos'], tot['pagos'], tot['obligaciones']]
-        consolidado[['compromisos','pagos','obligaciones']] = consolidado[['compromisos','pagos','obligaciones']] / 1_000_000
-        consolidado = consolidado.rename(columns={
-            'nom_vigencia_del_gasto': 'Vigencia del gasto',
-            'compromisos': 'Compromisos',
-            'pagos': 'Pagos',
-            'obligaciones': 'Obligaciones'
-        })
-        st.subheader("Consolidado por tipo de vigencia (millones de pesos)")
-        st.dataframe(consolidado.style.format({
-            'Compromisos': format_cop,
-            'Pagos': format_cop,
-            'Obligaciones': format_cop
-        }), use_container_width=True, hide_index=True)
+    # ════════════════════════════════════════════════════════════════════════
+    # PASO 2 — Construir variables de jerarquía
+    # ════════════════════════════════════════════════════════════════════════
+    def nivel_cuenta(c):
+        return len(str(c).split('.'))
 
-        st.metric("Total compromisos todas las vigencias", format_cop(tot['compromisos']/ 1e6))
+    def cuenta_padre(c):
+        partes = str(c).rsplit('.', 1)
+        return partes[0] if len(partes) > 1 else None
 
-                # --- Consolidado por sección presupuestal ---
-        df_sec = df_raw[
-            (df_raw['cuenta'] == '2') &
-            (df_raw['nombre_cuenta'].str.upper() == 'GASTOS') &
-            (df_raw['nom_vigencia_del_gasto'].fillna('').str.strip().str.upper() == 'VIGENCIA ACTUAL')
-        ]
-        consolidado_secc = df_sec.groupby(
-            'nom_seccion_presupuestal',
-            as_index=False
-        )[['compromisos','pagos','obligaciones']].sum()
-        # agregamos fila TOTAL
-        tot_secc = consolidado_secc[['compromisos','pagos','obligaciones']].sum().to_dict()
-        consolidado_secc.loc[len(consolidado_secc)] = [
-            'TOTAL',
-            tot_secc['compromisos'],
-            tot_secc['pagos'],
-            tot_secc['obligaciones']
-        ]
-        # pasamos a millones y renombramos columnas
-        consolidado_secc[['compromisos','pagos','obligaciones']] = consolidado_secc[['compromisos','pagos','obligaciones']] / 1_000_000
-        consolidado_secc = consolidado_secc.rename(columns={
-            'nom_seccion_presupuestal': 'Sección presupuestal',
-            'compromisos': 'Compromisos',
-            'pagos': 'Pagos',
-            'obligaciones': 'Obligaciones'
-        })
-        # **Aquí eliminamos todo lo anterior al guión, dejando sólo el texto posterior**
-        consolidado_secc['Sección presupuestal'] = consolidado_secc['Sección presupuestal']\
-            .str.replace(r'^.*?-\s*', '', regex=True)
-        # finalmente ordenamos y reseteamos índice
-        consolidado_secc = consolidado_secc.sort_values('Compromisos', ascending=False).reset_index(drop=True)
+    base['nivel_cuenta'] = base['cuenta'].apply(nivel_cuenta)
+    base['cuenta_padre'] = base['cuenta'].apply(cuenta_padre)
 
-        st.subheader("Consolidado por sección presupuestal (millones de pesos) - Vigencia Actual")
-        st.dataframe(
-            consolidado_secc.style.format({
-                'Compromisos': format_cop,
-                'Pagos': format_cop,
-                'Obligaciones': format_cop
-            }),
-            use_container_width=True,
-            hide_index=True
+    # Contar hijas inmediatas de cada cuenta
+    hijas_count = base.groupby('cuenta_padre')['cuenta'].count().to_dict()
+    base['n_hijas_inmediatas'] = base['cuenta'].map(hijas_count).fillna(0).astype(int)
+    base['tiene_hijas']        = base['n_hijas_inmediatas'] > 0
+    base['es_hoja']            = ~base['tiene_hijas']
+
+    # Índice rápido: cuenta → fila
+    idx = base.set_index('cuenta')
+
+    def recaudo_exacto(codigo):
+        """Recaudo de una cuenta EXACTA (sin sumar descendientes)."""
+        if codigo in idx.index:
+            return idx.loc[codigo, 'total_recaudo']
+        return 0.0
+
+    def recaudo_prefijo(codigo):
+        """Recaudo de una cuenta o, si no existe exacta, de sus subcuentas."""
+        exacto = recaudo_exacto(codigo)
+        if exacto > 0:
+            return exacto
+        prefijo = f"{codigo}."
+        return base[base['cuenta'].astype(str).str.startswith(prefijo)]['total_recaudo'].sum()
+
+    def hijas_inmediatas(codigo_padre):
+        """DataFrame con las hijas inmediatas de un código padre."""
+        return base[base['cuenta_padre'] == codigo_padre].copy()
+
+    # ════════════════════════════════════════════════════════════════════════
+    # PASO 3 — Validación: suma de hijas inmediatas vs valor del padre
+    #          (solo para cuentas con hijas)
+    # ════════════════════════════════════════════════════════════════════════
+    cuentas_padre = base[base['tiene_hijas']]['cuenta'].tolist()
+    alertas = []
+    for cp in cuentas_padre:
+        val_padre  = recaudo_exacto(cp)
+        suma_hijas = hijas_inmediatas(cp)['total_recaudo'].sum()
+        if val_padre > 0:
+            diff_abs = abs(val_padre - suma_hijas)
+            diff_pct = round(diff_abs / val_padre * 100, 2)
+            if diff_pct > 1.0:   # tolerancia del 1% para redondeos
+                nombre = idx.loc[cp, 'nombre_cuenta'] if cp in idx.index else cp
+                alertas.append({
+                    'Cuenta padre': cp,
+                    'Nombre': nombre,
+                    'Valor padre': round(val_padre / 1e6, 1),
+                    'Suma hijas': round(suma_hijas / 1e6, 1),
+                    'Dif. absoluta (M)': round(diff_abs / 1e6, 1),
+                    'Dif. %': diff_pct
+                })
+
+    if alertas:
+        with st.expander(f"⚠️ Advertencias de consistencia ({len(alertas)} cuentas)", expanded=False):
+            st.dataframe(pd.DataFrame(alertas), use_container_width=True, hide_index=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 1 — ESTRUCTURA GENERAL
+    # Usa códigos exactos de los grandes grupos (nivel 1 y 2)
+    # ════════════════════════════════════════════════════════════════════════
+    total_general  = recaudo_exacto('1')
+    corrientes     = recaudo_exacto('1.1')
+    tributarios    = recaudo_exacto('1.1.01')
+    no_tributarios = recaudo_exacto('1.1.02')
+    capital        = recaudo_exacto('1.2')
+
+    # Si '1' no existe directamente, inferir del nivel superior real
+    if total_general == 0:
+        total_general = base[base['nivel_cuenta'] == 1]['total_recaudo'].sum()
+
+    st.subheader(f"Recaudo total — {ent} | {per_lab}")
+
+    def render_card(titulo, valor, pct_val, pct_lbl, color, extra_text=None):
+        extra_html = f"<div style=\"font-size:11px;color:#aaa;margin-top:4px;\">{extra_text}</div>" if extra_text else ""
+        st.markdown(f"""
+        <div style="background:#1e1e2e;border-left:4px solid {color};border-radius:8px;
+                    padding:14px 18px;margin:4px 0;">
+            <div style="font-size:11px;color:#aaa;text-transform:uppercase;
+                        letter-spacing:.05em;margin-bottom:6px;">{titulo}</div>
+            <div style="font-size:22px;font-weight:700;color:#fff;margin-bottom:4px;">
+                {fmt_mm(valor)}
+            </div>
+            <div style="font-size:13px;color:{color};font-weight:500;">
+                {pct_val}% {pct_lbl}
+            </div>
+            {extra_html}
+        </div>""", unsafe_allow_html=True)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        render_card(
+            "Total recaudo",
+            total_general,
+            100,
+            "del total",
+            "#4CAF50"
+        )
+    with c2:
+        render_card(
+            "Ingresos corrientes",
+            corrientes,
+            pct(corrientes, total_general),
+            "del total",
+            "#2196F3"
+        )
+    with c3:
+        render_card(
+            "Tributarios",
+            tributarios,
+            pct(tributarios, total_general),
+            "del total",
+            "#00BCD4",
+            extra_text=f"{pct(tributarios, corrientes):.1f}% de corrientes"
+        )
+    with c4:
+        render_card(
+            "No tributarios",
+            no_tributarios,
+            pct(no_tributarios, total_general),
+            "del total",
+            "#9C27B0",
+            extra_text=f"{pct(no_tributarios, corrientes):.1f}% de corrientes"
+        )
+    with c5:
+        render_card(
+            "Recursos de capital",
+            capital,
+            pct(capital, total_general),
+            "del total",
+            "#FF9800"
         )
 
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 2 — PRINCIPALES INGRESOS CORRIENTES
+    # Se separan ingresos tributarios y no tributarios.
+    # No se mezclan cuentas padre con descendientes.
+    # ════════════════════════════════════════════════════════════════════════
 
-        # ————— más espacio antes de la gráfica —————
-        st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("---")
+    st.subheader("Principales ingresos corrientes")
 
-       # gráfica de barras de compromisos por sección presupuestal 
-        df_plot_sec = consolidado_secc[
-            consolidado_secc['Sección presupuestal'] != 'TOTAL'
-        ][['Sección presupuestal', 'Compromisos']]
+    def preparar_top_cuentas(df, denominador_total, denominador_grupo, nombre_pct_grupo, top_n=9):
+        """
+        Prepara una tabla de principales cuentas sin doble conteo.
+        El DataFrame recibido debe contener únicamente cuentas comparables:
+        hijas inmediatas de una misma cuenta padre o de ramas equivalentes.
+        """
+        df = df.copy()
 
-        max_val = df_plot_sec['Compromisos'].max() * 1.1  # un 10% de margen
+        if df.empty:
+            return df
 
-        chart_sec = alt.Chart(df_plot_sec).mark_bar(cornerRadius=4).encode(
+        df["total_recaudo"] = pd.to_numeric(
+            df["total_recaudo"],
+            errors="coerce"
+        ).fillna(0)
+
+        df = df[df["total_recaudo"] > 0].copy()
+
+        if df.empty:
+            return df
+
+        df["pct_total"] = df["total_recaudo"].apply(
+            lambda x: pct(x, denominador_total)
+        )
+
+        df["pct_grupo"] = df["total_recaudo"].apply(
+            lambda x: pct(x, denominador_grupo)
+        )
+
+        df["nombre_pct_grupo"] = nombre_pct_grupo
+
+        df = (
+            df.sort_values("total_recaudo", ascending=False)
+              .head(top_n)
+              .reset_index(drop=True)
+        )
+
+        return df
+
+    def render_cards_cuentas(df, color, etiqueta_grupo):
+        """
+        Renderiza tarjetas de cuentas principales.
+        """
+        if df.empty:
+            st.info(f"No se encontraron registros para {etiqueta_grupo}.")
+            return
+
+        for i in range(0, len(df), 3):
+            fila = df.iloc[i:i+3]
+            cols = st.columns(len(fila))
+
+            for col, (_, row) in zip(cols, fila.iterrows()):
+                nombre = str(row["nombre_cuenta"]).title()
+                v = row["total_recaudo"]
+
+                with col:
+                    st.markdown(f"""
+                    <div style="background:#1e1e2e;border-left:4px solid {color};border-radius:8px;
+                                padding:14px 18px;margin:4px 0;">
+                        <div style="font-size:11px;color:#aaa;text-transform:uppercase;
+                                    letter-spacing:.04em;margin-bottom:6px;line-height:1.4;">
+                            {nombre}
+                        </div>
+                        <div style="font-size:20px;font-weight:700;color:#fff;margin-bottom:4px;">
+                            {fmt_mm(v)}
+                        </div>
+                        <div style="font-size:12px;color:{color};">
+                            <b>{row["pct_total"]}%</b> del total
+                            &nbsp;·&nbsp;
+                            <b>{row["pct_grupo"]}%</b> {row["nombre_pct_grupo"]}
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+
+    def render_tabla_cuentas(df, etiqueta_columna, nombre_pct_grupo):
+        """
+        Renderiza tabla de detalle con código de cuenta para auditoría.
+        """
+        if df.empty:
+            return
+
+        df_tabla = df[
+            ["cuenta", "nombre_cuenta", "total_recaudo", "pct_total", "pct_grupo"]
+        ].copy()
+
+        df_tabla.columns = [
+            "Cuenta",
+            etiqueta_columna,
+            "Recaudo",
+            "% del total",
+            nombre_pct_grupo
+        ]
+
+        df_tabla["Recaudo"] = df_tabla["Recaudo"].apply(fmt_mm)
+        df_tabla["% del total"] = df_tabla["% del total"].apply(lambda x: f"{x:.1f}%")
+        df_tabla[nombre_pct_grupo] = df_tabla[nombre_pct_grupo].apply(lambda x: f"{x:.1f}%")
+
+        st.dataframe(df_tabla, use_container_width=True, hide_index=True)
+
+    def render_grafico_cuentas(df, titulo_x, color):
+        """
+        Gráfico horizontal robusto.
+        Usa nombres de columnas simples para evitar errores de Altair/Vega.
+        """
+        if df.empty:
+            return
+
+        df_ch = df.copy()
+
+        df_ch["total_recaudo"] = pd.to_numeric(
+            df_ch["total_recaudo"],
+            errors="coerce"
+        ).fillna(0)
+
+        # Pasar pesos a miles de millones
+        df_ch["recaudo_miles_millones"] = df_ch["total_recaudo"] / 1e9
+
+        df_ch["nombre_corto"] = (
+            df_ch["nombre_cuenta"]
+            .astype(str)
+            .str.upper()
+            .str.replace("IMPUESTO DE ", "", regex=False)
+            .str.replace("IMPUESTO ", "", regex=False)
+            .str.slice(0, 45)
+        )
+
+        df_ch = df_ch[df_ch["recaudo_miles_millones"] > 0].copy()
+        df_ch = df_ch.sort_values("recaudo_miles_millones", ascending=True)
+
+        if df_ch.empty:
+            st.info("No hay valores positivos para graficar.")
+            return
+
+        max_x = df_ch["recaudo_miles_millones"].max() * 1.15
+
+        chart = alt.Chart(df_ch).mark_bar(
+            cornerRadius=4,
+            color=color
+        ).encode(
             x=alt.X(
-                'Sección presupuestal:N',
-                sort='-y',
-                title='',  
-                axis=alt.Axis(
-                    labels=False,   # oculta los nombres de cada barra
-                    ticks=False     # oculta las marcas de tick
-                )
+                "recaudo_miles_millones:Q",
+                title=titulo_x,
+                scale=alt.Scale(domain=[0, max_x]),
+                axis=alt.Axis(format="$,.1f")
             ),
             y=alt.Y(
-                'Compromisos:Q',
-                title='Compromisos (millones)',
-                scale=alt.Scale(type='sqrt', domain=[0, max_val]),  # raíz cuadrada
-                axis=alt.Axis(format='$,.0f')
+                "nombre_corto:N",
+                sort="x",
+                title="",
+                axis=alt.Axis(labelLimit=260)
             ),
             tooltip=[
-                alt.Tooltip('Sección presupuestal:N'),
-                alt.Tooltip('Compromisos:Q', format='$,.0f')
+                alt.Tooltip("cuenta:N", title="Cuenta"),
+                alt.Tooltip("nombre_cuenta:N", title="Cuenta presupuestal"),
+                alt.Tooltip("recaudo_miles_millones:Q", format="$,.1f", title="Miles de millones"),
+                alt.Tooltip("pct_total:Q", format=".1f", title="% del total"),
+                alt.Tooltip("pct_grupo:Q", format=".1f", title="% del grupo")
             ]
-        ).properties(width=700, height=400)
-
-        st.altair_chart(chart_sec, use_container_width=True)
-
-                        # ————— Exportar a Excel —————
-        st.markdown("")
-
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            wb = writer.book
-            # formato moneda
-            currency_fmt = wb.add_format({'num_format': '$#,##0.00'})
-
-            # 1) Datos Brutos
-            df_brutos_exp = df_raw.copy()
-            # orden ascendente por 'cuenta'
-            if 'cuenta' in df_brutos_exp.columns:
-                df_brutos_exp = df_brutos_exp.sort_values('cuenta', ascending=True)
-            df_brutos_exp.to_excel(writer, index=False, sheet_name='Datos Brutos')
-            ws0 = writer.sheets['Datos Brutos']
-            # formatear solo las tres columnas de valor
-            for col in ['compromisos','pagos','obligaciones']:
-                if col in df_brutos_exp.columns:
-                    idx = df_brutos_exp.columns.get_loc(col)
-                    ws0.set_column(idx, idx, None, currency_fmt)
-
-            # 2) Resumen por Cuenta
-            resumen.to_excel(writer, index=False, sheet_name='Resumen por Cuenta')
-            ws1 = writer.sheets['Resumen por Cuenta']
-            for col in ['Compromisos','Pagos','Obligaciones']:
-                if col in resumen.columns:
-                    idx = resumen.columns.get_loc(col)
-                    ws1.set_column(idx, idx, None, currency_fmt)
-
-            # 3) Por Vigencia
-            consolidado.to_excel(writer, index=False, sheet_name='Por Vigencia')
-            ws2 = writer.sheets['Por Vigencia']
-            for col in ['Compromisos','Pagos','Obligaciones']:
-                if col in consolidado.columns:
-                    idx = consolidado.columns.get_loc(col)
-                    ws2.set_column(idx, idx, None, currency_fmt)
-
-            # 4) Por Sección Presupuestal
-            consolidado_secc.to_excel(writer, index=False, sheet_name='Por Sección Presupuestal')
-            ws3 = writer.sheets['Por Sección Presupuestal']
-            for col in ['Compromisos','Pagos','Obligaciones']:
-                if col in consolidado_secc.columns:
-                    idx = consolidado_secc.columns.get_loc(col)
-                    ws3.set_column(idx, idx, None, currency_fmt)
-
-        st.download_button(
-            label="Excel",
-            data=output.getvalue(),
-            file_name=f"ejecucion_gastos_{ent_sel}_{periodo}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ).properties(
+            height=max(260, len(df_ch) * 42)
         )
 
-                
+        st.altair_chart(chart, use_container_width=True)
 
+    # ───────────────────────────────────────────────────────────────────────
+    # 2.1 Principales ingresos tributarios
+    # ───────────────────────────────────────────────────────────────────────
 
+    st.markdown("### Principales ingresos tributarios")
+
+    df_directos = hijas_inmediatas("1.1.01.01")
+    df_indirectos = hijas_inmediatas("1.1.01.02")
+
+    df_tributarios_principales = pd.concat(
+        [df_directos, df_indirectos],
+        ignore_index=True
+    )
+
+    df_tributarios_principales = preparar_top_cuentas(
+        df=df_tributarios_principales,
+        denominador_total=total_general,
+        denominador_grupo=tributarios,
+        nombre_pct_grupo="de tributarios",
+        top_n=9
+    )
+
+    # Validación: solo deben aparecer cuentas bajo impuestos directos o indirectos
+    if not df_tributarios_principales.empty:
+        mask_no_tributaria = ~(
+            df_tributarios_principales["cuenta"].astype(str).str.startswith("1.1.01.01.") |
+            df_tributarios_principales["cuenta"].astype(str).str.startswith("1.1.01.02.")
+        )
+
+        if mask_no_tributaria.any():
+            st.warning(
+                "Advertencia: hay cuentas en principales tributarios que no parecen pertenecer "
+                "a impuestos directos o indirectos. Revise la clasificación por código CUIPO."
+            )
+            st.dataframe(
+                df_tributarios_principales.loc[
+                    mask_no_tributaria,
+                    ["cuenta", "nombre_cuenta", "total_recaudo"]
+                ],
+                use_container_width=True,
+                hide_index=True
+            )
+
+    render_cards_cuentas(
+        df=df_tributarios_principales,
+        color="#00BCD4",
+        etiqueta_grupo="ingresos tributarios"
+    )
+
+    st.markdown("#### Detalle tributario")
+    render_tabla_cuentas(
+        df=df_tributarios_principales,
+        etiqueta_columna="Ingreso tributario",
+        nombre_pct_grupo="% de tributarios"
+    )
+
+    render_grafico_cuentas(
+        df=df_tributarios_principales,
+        titulo_x="Miles de millones de pesos",
+        color="#00BCD4"
+    )
+
+    # ───────────────────────────────────────────────────────────────────────
+    # 2.2 Principales ingresos no tributarios
+    # ───────────────────────────────────────────────────────────────────────
+
+    st.markdown("### Principales ingresos no tributarios")
+
+    df_no_tributarios_principales = hijas_inmediatas("1.1.02")
+
+    df_no_tributarios_principales = preparar_top_cuentas(
+        df=df_no_tributarios_principales,
+        denominador_total=total_general,
+        denominador_grupo=no_tributarios,
+        nombre_pct_grupo="de no tributarios",
+        top_n=9
+    )
+
+    # Validación: los no tributarios deben ser hijos inmediatos de 1.1.02
+    if not df_no_tributarios_principales.empty:
+        mask_no_no_tributaria = (
+            df_no_tributarios_principales["cuenta_padre"].astype(str) != "1.1.02"
+        )
+
+        if mask_no_no_tributaria.any():
+            st.warning(
+                "Advertencia: hay cuentas en principales no tributarios que no son hijas inmediatas "
+                "de `1.1.02`. Revise la clasificación por código CUIPO."
+            )
+            st.dataframe(
+                df_no_tributarios_principales.loc[
+                    mask_no_no_tributaria,
+                    ["cuenta", "nombre_cuenta", "total_recaudo"]
+                ],
+                use_container_width=True,
+                hide_index=True
+            )
+
+    render_cards_cuentas(
+        df=df_no_tributarios_principales,
+        color="#9C27B0",
+        etiqueta_grupo="ingresos no tributarios"
+    )
+
+    st.markdown("#### Detalle no tributario")
+    render_tabla_cuentas(
+        df=df_no_tributarios_principales,
+        etiqueta_columna="Ingreso no tributario",
+        nombre_pct_grupo="% de no tributarios"
+    )
+
+    render_grafico_cuentas(
+        df=df_no_tributarios_principales,
+        titulo_x="Miles de millones de pesos",
+        color="#9C27B0"
+    )
+
+    st.caption(
+        "Los ingresos tributarios principales se construyen con las hijas inmediatas "
+        "de impuestos directos (`1.1.01.01`) e impuestos indirectos (`1.1.01.02`). "
+        "Los ingresos no tributarios principales se construyen con las hijas inmediatas "
+        "de `1.1.02`. La clasificación se realiza por código CUIPO/CCPET y no por el "
+        "nombre textual de la cuenta. Cada valor corresponde a la cuenta exacta mostrada, "
+        "sin sumar descendientes, para evitar doble conteo."
+    )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 3 — SERIE DE TIEMPO nominal vs real
+    # Misma lógica de jerarquía: total = recaudo_exacto('1') por período
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("Histórico del recaudo — nominal vs real (millones de pesos)")
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def obtener_historico_ingresos_ejing(codigo_entidad):
+        codigo_entidad = str(int(float(codigo_entidad)))
+        url = "https://www.datos.gov.co/resource/9axr-9gnb.csv"
+        params = {
+            '$limit': 500000,
+            '$select': 'periodo,cuenta,nombre_cuenta,total_recaudo',
+            '$where': f"codigo_entidad='{codigo_entidad}'"
+        }
+        try:
+            r = requests.get(url, params=params, timeout=90)
+            r.raise_for_status()
+            df_h = pd.read_csv(io.StringIO(r.text))
+            return df_h if not df_h.empty else pd.DataFrame()
+        except Exception as e:
+            st.warning(f"No se pudo obtener el histórico: {e}")
+            return pd.DataFrame()
+
+    with st.spinner("Cargando histórico..."):
+        df_hist_raw = obtener_historico_ingresos_ejing(cod_ent)
+
+    registros_hist = []
+    if not df_hist_raw.empty:
+        df_hist_raw['total_recaudo'] = pd.to_numeric(df_hist_raw['total_recaudo'], errors='coerce').fillna(0)
+        df_hist_raw['cuenta']        = df_hist_raw['cuenta'].astype(str).str.strip()
+        df_hist_raw['periodo_dt']    = pd.to_datetime(
+            df_hist_raw['periodo'].astype(str).str.zfill(8), format='%Y%m%d', errors='coerce'
+        )
+        df_hist_raw = df_hist_raw.dropna(subset=['periodo_dt'])
+        df_hist_raw['year'] = df_hist_raw['periodo_dt'].dt.year
+        df_hist_raw['md']   = df_hist_raw['periodo_dt'].dt.strftime('%m%d')
+
+        # Agrupar por período+cuenta (elimina duplicados por fuente)
+        df_hg = df_hist_raw.groupby(
+            ['periodo', 'periodo_dt', 'year', 'md', 'cuenta', 'nombre_cuenta'],
+            as_index=False
+        )['total_recaudo'].sum()
+
+        año_actual = df_hg['year'].max()
+        for yr, grp in df_hg.groupby('year'):
+            if yr != año_actual:
+                corte = grp[grp['md'] == '1201']
+                corte = corte if not corte.empty else grp[grp['periodo_dt'] == grp['periodo_dt'].max()]
+            else:
+                corte = grp[grp['periodo_dt'] == grp['periodo_dt'].max()]
+
+            # Total del período: usar cuenta exacta '1'
+            total_h = corte.loc[corte['cuenta'] == '1', 'total_recaudo'].sum()
+            # Si '1' no existe, usar el nivel 1 más alto disponible
+            if total_h == 0:
+                corte_ag = corte.groupby(['cuenta','nombre_cuenta'], as_index=False)['total_recaudo'].sum()
+                corte_ag['nivel'] = corte_ag['cuenta'].apply(lambda c: len(str(c).split('.')))
+                total_h = corte_ag[corte_ag['nivel'] == 1]['total_recaudo'].sum()
+
+            if total_h > 0:
+                registros_hist.append({
+                    'año': yr,
+                    'periodo_dt': corte['periodo_dt'].max(),
+                    'recaudo': total_h
+                })
+
+    if registros_hist:
+        ipc_map = {2019: 97.46, 2020: 100.00, 2021: 111.41, 2022: 126.03, 2023: 137.09, 2024: 144.88}
+        df_serie = pd.DataFrame(registros_hist).sort_values('periodo_dt')
+        df_serie['Recaudo Nominal'] = (df_serie['recaudo'] / 1e6).round(1)
+        df_serie['ipc']             = df_serie['año'].map(ipc_map)
+        df_serie['Recaudo Real']    = df_serie.apply(
+            lambda r: round(r['Recaudo Nominal'] / r['ipc'] * 100, 1) if pd.notna(r['ipc']) else None,
+            axis=1
+        )
+
+        df_long = df_serie.melt(
+            id_vars=['periodo_dt'],
+            value_vars=['Recaudo Nominal', 'Recaudo Real'],
+            var_name='Tipo', value_name='Monto'
+        ).dropna(subset=['Monto'])
+
+        min_val = df_long['Monto'].min() * 0.9
+        chart_hist = alt.Chart(df_long).mark_line(point=True).encode(
+            x=alt.X('year(periodo_dt):O', title='Año'),
+            y=alt.Y('Monto:Q',
+                    title='Recaudo (millones de pesos)',
+                    scale=alt.Scale(domainMin=min_val),
+                    axis=alt.Axis(format='$,.0f')),
+            color=alt.Color('Tipo:N', legend=alt.Legend(title='Serie')),
+            tooltip=[
+                alt.Tooltip('year(periodo_dt):O', title='Año'),
+                alt.Tooltip('Tipo:N', title='Serie'),
+                alt.Tooltip('Monto:Q', format='$,.1f', title='Millones COP'),
+            ]
+        ).properties(width=700, height=350)
+        st.altair_chart(chart_hist, use_container_width=True)
+
+        if len(df_serie) >= 2:
+            primer  = df_serie.iloc[0]
+            ultimo  = df_serie.iloc[-1]
+            var_nom = round(
+                (ultimo['Recaudo Nominal'] - primer['Recaudo Nominal']) / primer['Recaudo Nominal'] * 100, 1
+            )
+            st.markdown("**Tendencia histórica**")
+            st.markdown(
+                f"- El recaudo pasó de **$ {primer['Recaudo Nominal']:,.1f} M** ({int(primer['año'])}) "
+                f"a **$ {ultimo['Recaudo Nominal']:,.1f} M** ({int(ultimo['año'])}), "
+                f"variación nominal de **{var_nom:+.1f}%**."
+            )
+            if pd.notna(ultimo.get('Recaudo Real')) and pd.notna(primer.get('Recaudo Real')):
+                var_real = round(
+                    (ultimo['Recaudo Real'] - primer['Recaudo Real']) / primer['Recaudo Real'] * 100, 1
+                )
+                st.markdown(
+                    f"- En términos reales (pesos constantes base 2021), "
+                    f"la variación fue **{var_real:+.1f}%**."
+                )
+        st.caption(
+            "El total histórico usa el valor exacto de la cuenta '1' (Total ingresos) reportado por la entidad, "
+            "no la suma de sus descendientes."
+        )
+    else:
+        st.info("No hay datos históricos suficientes para esta entidad.")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN 4 — EXPORTAR EXCEL
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    output_ejing = io.BytesIO()
+    with pd.ExcelWriter(output_ejing, engine='xlsxwriter') as writer:
+        wb      = writer.book
+        fmt_num = wb.add_format({'num_format': '#,##0.0'})
+        fmt_pct = wb.add_format({'num_format': '0.0"%"'})
+
+        # Hoja 1: tributarios principales
+        if "df_tributarios_principales" in locals() and not df_tributarios_principales.empty:
+            exp_tri = df_tributarios_principales[
+                ["cuenta", "nombre_cuenta", "total_recaudo", "pct_total", "pct_grupo"]
+            ].copy()
+
+            exp_tri.columns = [
+                "Cuenta",
+                "Ingreso tributario",
+                "Recaudo (pesos)",
+                "% del total",
+                "% de tributarios"
+            ]
+
+            exp_tri.to_excel(writer, index=False, sheet_name="Tributarios principales")
+            ws1 = writer.sheets["Tributarios principales"]
+            ws1.set_column(2, 2, None, fmt_num)
+            ws1.set_column(3, 4, None, fmt_pct)
+
+        # Hoja 2: no tributarios principales
+        if "df_no_tributarios_principales" in locals() and not df_no_tributarios_principales.empty:
+            exp_notri = df_no_tributarios_principales[
+                ["cuenta", "nombre_cuenta", "total_recaudo", "pct_total", "pct_grupo"]
+            ].copy()
+
+            exp_notri.columns = [
+                "Cuenta",
+                "Ingreso no tributario",
+                "Recaudo (pesos)",
+                "% del total",
+                "% de no tributarios"
+            ]
+
+            exp_notri.to_excel(writer, index=False, sheet_name="No tributarios principales")
+            ws_nt = writer.sheets["No tributarios principales"]
+            ws_nt.set_column(2, 2, None, fmt_num)
+            ws_nt.set_column(3, 4, None, fmt_pct)
+
+        # Hoja 2: árbol jerárquico completo
+        exp_arbol = base[['cuenta','nombre_cuenta','nivel_cuenta','tiene_hijas','es_hoja','total_recaudo']].sort_values('cuenta').copy()
+        exp_arbol.to_excel(writer, index=False, sheet_name='Árbol jerárquico')
+        ws2 = writer.sheets['Árbol jerárquico']
+        ws2.set_column(5, 5, None, fmt_num)
+
+        # Hoja 3: serie histórica
+        if registros_hist:
+            df_serie[['año','Recaudo Nominal','Recaudo Real']].to_excel(
+                writer, index=False, sheet_name='Serie histórica'
+            )
+            ws3 = writer.sheets['Serie histórica']
+            ws3.set_column(1, 2, None, fmt_num)
+
+        # Hoja 4: alertas de consistencia
+        if alertas:
+            pd.DataFrame(alertas).to_excel(writer, index=False, sheet_name='Alertas consistencia')
+
+    st.download_button(
+        label="Excel",
+        data=output_ejing.getvalue(),
+        file_name=f"ejecucion_ingresos_{ent}_{periodo}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
 
@@ -1000,14 +2055,6 @@ elif pagina == "Ejecución de Gastos":
 
 
     
-
-
-
-
-
-
-
-
 
 
 
