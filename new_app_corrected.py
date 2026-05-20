@@ -101,6 +101,192 @@ def obtener_ingresos_filtrados(codigo_entidad, periodo=None):
         return pd.DataFrame()
     return pd.read_csv(io.StringIO(resp.text))
 
+
+# ——————————————————————————————————————————————————————
+# Funciones auxiliares para normalización de datos XLSB
+# ——————————————————————————————————————————————————————
+import unicodedata
+import re
+
+def normalizar_columna(c):
+    """Normaliza un nombre de columna: quita tildes, espacios, mayúsculas."""
+    c = str(c).strip()
+    c = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii")
+    c = c.upper()
+    c = re.sub(r"[^A-Z0-9]+", "_", c)
+    c = re.sub(r"_+", "_", c).strip("_")
+    return c
+
+def limpiar_codigo(x):
+    """Convierte un código (8001.0 -> '8001') a string limpio."""
+    if pd.isna(x):
+        return ""
+    s = str(x).strip()
+    try:
+        return str(int(float(s)))
+    except Exception:
+        return s
+
+def normalizar_codigo_entidad(x):
+    if pd.isna(x):
+        return ""
+    s = str(x).strip()
+    try:
+        return str(int(float(s)))
+    except Exception:
+        return s
+
+def limpiar_valor_monetario(valor):
+    """
+    Convierte a float de forma robusta para valores en formato
+    colombiano o estándar: 1.234.567,89 / $ 1.234.567 / 1234567.89
+    """
+    if pd.isna(valor):
+        return 0.0
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    s = str(valor).strip().replace("$", "").strip()
+    if not s:
+        return 0.0
+    count_comma  = s.count(",")
+    count_period = s.count(".")
+    # Formato colombiano: 1.234.567,89  (puntos miles, coma decimal)
+    if count_period > 1 or (count_period >= 1 and count_comma == 1 and s.index(".") < s.index(",")):
+        s = s.replace(".", "").replace(",", ".")
+    # Formato US: 1,234,567.89  (comas miles, punto decimal)
+    elif count_comma > 1 or (count_comma >= 1 and count_period == 1 and s.index(",") < s.index(".")):
+        s = s.replace(",", "")
+    # Solo coma, asumir decimal colombiano
+    elif count_comma == 1 and count_period == 0:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+# ——————————————————————————————————————————————————————
+# NUEVA FUNCIÓN: cargar_xlsb_ejecucion_gastos_2025t4()
+# Lee el archivo XLSB ejecucion_Gasto_2025t4.xlsb
+# NO usa CSV. Normaliza columnas, mapea a formato interno.
+# ——————————————————————————————————————————————————————
+@st.cache_data(ttl=600, show_spinner=False)
+def cargar_xlsb_ejecucion_gastos_2025t4():
+    """Carga el XLSB local de ejecución de gastos T4 2025 para el período 20251201."""
+    archivo = "ejecucion_Gasto_2025t4.xlsb"
+    
+    if not os.path.exists(archivo):
+        st.warning(f"No se encontró el archivo local: {archivo}")
+        return pd.DataFrame()
+    
+    try:
+        # Leer el XLSB con pyxlsb
+        df = pd.read_excel(
+            archivo,
+            sheet_name=0,
+            engine="pyxlsb",
+            dtype=str
+        )
+        
+        # Paso 1: Normalizar nombres de columnas
+        df.columns = [normalizar_columna(c) for c in df.columns]
+        
+        # Paso 2: Mapeo de columnas normalizadas a nombres internos de la app
+        columnas_mapeo = {
+            "PERIODO": "periodo",
+            "CODIGO_ENTIDAD": "codigo_entidad",
+            "CODIGO_FUT": "codigo_entidad",
+            "NOMBRE_ENTIDAD": "nombre_entidad",
+            "ENTIDAD": "nombre_entidad",
+            "CUENTA": "cuenta",
+            "CODIGO_CONCEPTO": "cuenta",
+            "NOMBRE_CUENTA": "nombre_cuenta",
+            "CONCEPTO": "nombre_cuenta",
+            "CODIGO_VIGENCIA_DEL_GASTO": "cod_vigencia_del_gasto",
+            "COD_VIGENCIA_DEL_GASTO": "cod_vigencia_del_gasto",
+            "VIGENCIA_DEL_GASTO": "nom_vigencia_del_gasto",
+            "NOM_VIGENCIA_DEL_GASTO": "nom_vigencia_del_gasto",
+            "CODIGO_SECCION_PRESUPUESTAL": "cod_seccion_presupuestal",
+            "COD_SECCION_PRESUPUESTAL": "cod_seccion_presupuestal",
+            "SECCION_PRESUPUESTAL": "nom_seccion_presupuestal",
+            "NOM_SECCION_PRESUPUESTAL": "nom_seccion_presupuestal",
+            "CODIGO_PRODUCTO_PROGRAMA_MGA": "cod_programatico_mga",
+            "COD_PROGRAMATICO_MGA": "cod_programatico_mga",
+            "PROGRAMA_MGA": "nom_programatico_mga",
+            "NOM_PROGRAMATICO_MGA": "nom_programatico_mga",
+            "CODIGO_CPC": "cod_cpc",
+            "COD_CPC": "cod_cpc",
+            "CPC": "nom_cpc",
+            "NOM_CPC": "nom_cpc",
+            "CODIGO_DETALLESECTORIAL": "cod_sectorial",
+            "CODIGO_DETALLE_SECTORIAL": "cod_sectorial",
+            "COD_SECTORIAL": "cod_sectorial",
+            "DETALLE_SECTORIAL": "nom_sectorial",
+            "NOM_SECTORIAL": "nom_sectorial",
+            "CODIGO_FUENTE_FINANCIACION": "cod_fuentes_financiacion",
+            "COD_FUENTES_FINANCIACION": "cod_fuentes_financiacion",
+            "FUENTE_FINANCIACION": "nom_fuentes_financiacion",
+            "NOM_FUENTES_FINANCIACION": "nom_fuentes_financiacion",
+            "BPIN": "bpin",
+            "CODIGO_SITUACION_FONDOS": "cod_situacion_de_fondos",
+            "COD_SITUACION_DE_FONDOS": "cod_situacion_de_fondos",
+            "SITUACION_FONDOS": "nom_situacion_de_fondos",
+            "NOM_SITUACION_DE_FONDOS": "nom_situacion_de_fondos",
+            "CODIGO_POLITICA_PUBLICA": "cod_politica_publica",
+            "COD_POLITICA_PUBLICA": "cod_politica_publica",
+            "POLITICA_PUBLICA": "nom_politica_publica",
+            "NOM_POLITICA_PUBLICA": "nom_politica_publica",
+            "CODIGO_TERCERO": "cod_terceros",
+            "COD_TERCEROS": "cod_terceros",
+            "TERCERO": "nom_terceros",
+            "NOM_TERCEROS": "nom_terceros",
+            "COMPROMISOS": "compromisos",
+            "OBLIGACIONES": "obligaciones",
+            "PAGOS": "pagos",
+        }
+        
+        # Aplicar renombramiento
+        df = df.rename(columns={k: v for k, v in columnas_mapeo.items() if k in df.columns})
+        
+        # Paso 3: Validar columnas mínimas
+        columnas_minimas = [
+            "periodo",
+            "codigo_entidad",
+            "cuenta",
+            "nombre_cuenta",
+            "nom_seccion_presupuestal",
+            "nom_vigencia_del_gasto",
+            "compromisos",
+            "obligaciones",
+            "pagos"
+        ]
+        
+        faltantes = [c for c in columnas_minimas if c not in df.columns]
+        
+        if faltantes:
+            st.warning(
+                "El archivo XLSB no tiene las columnas mínimas esperadas. "
+                f"Faltan: {faltantes}. "
+                f"Columnas encontradas: {list(df.columns)}"
+            )
+            return pd.DataFrame()
+        
+        # Paso 4: Normalizar códigos (8001.0 -> "8001", etc.)
+        for col in ["codigo_entidad", "periodo", "cuenta"]:
+            if col in df.columns:
+                df[col] = df[col].apply(limpiar_codigo)
+        
+        # Paso 5: Convertir valores monetarios
+        for col in ["compromisos", "obligaciones", "pagos"]:
+            if col in df.columns:
+                df[col] = df[col].apply(limpiar_valor_monetario)
+        
+        return df
+    
+    except Exception as e:
+        st.warning(f"Error al cargar el archivo XLSB de gastos 2025-T4: {e}")
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def obtener_datos_gastos(codigo_entidad, periodo):
     cols = [
@@ -110,6 +296,33 @@ def obtener_datos_gastos(codigo_entidad, periodo):
     ]
     # Convertimos a string sin decimales para evitar errores
     codigo_entidad = str(int(float(codigo_entidad)))
+    periodo        = str(periodo).strip()
+
+    # ── Para el período 2025-T4 (20251201), usar EXCLUSIVAMENTE el XLSB ─────
+    if periodo == "20251201":
+        df_local = cargar_xlsb_ejecucion_gastos_2025t4()
+        
+        if not df_local.empty:
+            df_local_filt = df_local[
+                (df_local["codigo_entidad"] == codigo_entidad) &
+                (df_local["periodo"] == periodo)
+            ].copy()
+            
+            if not df_local_filt.empty:
+                return df_local_filt
+            else:
+                st.warning(
+                    f"El archivo local XLSB existe, pero no contiene datos para la entidad {codigo_entidad} y periodo {periodo}."
+                )
+                return pd.DataFrame()
+        else:
+            st.warning(
+                "No se pudo cargar el archivo local XLSB para 2025-T4. "
+                "No se consultará la API porque este período debe venir exclusivamente del archivo local."
+            )
+            return pd.DataFrame()
+    
+    # ── Para cualquier otro período, usar la API normalmente ───────────────
     where = f"codigo_entidad='{codigo_entidad}' AND periodo='{periodo}'"
     params = {"$select": ",".join(cols), "$where": where, "$limit": 100000}
     try:
@@ -123,36 +336,148 @@ def obtener_datos_gastos(codigo_entidad, periodo):
         st.warning(f"No se pudo obtener la información de la API: {e}")
         return pd.DataFrame()
 
+def _limpiar_total_recaudo(valor):
+    """
+    Limpia y convierte TOTAL_RECAUDO de forma robusta.
+    Maneja:
+    - Valores ya numéricos
+    - Strings con $ y espacios
+    - Formato US (coma miles, punto decimal): 8,440,529.00
+    - Formato colombiano (punto miles, coma decimal): 8.440.529,00
+    """
+    if pd.isna(valor):
+        return 0.0
+    
+    # Si ya es número, retornar
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    
+    # Convertir a string y limpiar
+    s = str(valor).strip()
+    
+    # Quitar símbolo $
+    s = s.replace('$', '').strip()
+    
+    if not s or s == '':
+        return 0.0
+    
+    # Detectar formato: contar comas y puntos
+    count_comma = s.count(',')
+    count_period = s.count('.')
+    
+    # Formato US: 8,440,529.00 (múltiples comas, último punto es decimal)
+    if count_comma > count_period:
+        s = s.replace(',', '')  # Quitar comas (miles)
+        s = s.replace('.', '.')  # Punto se mantiene (decimal)
+    # Formato colombiano: 8.440.529,00 (múltiples puntos, última coma es decimal)
+    elif count_period > count_comma:
+        s = s.replace('.', '')  # Quitar puntos (miles)
+        s = s.replace(',', '.')  # Convertir coma a punto (decimal)
+    # Ambiguos: solo coma o solo punto
+    elif count_comma == 1 and count_period == 0:
+        s = s.replace(',', '.')  # Asumir coma como decimal
+    
+    try:
+        return float(s)
+    except:
+        return 0.0
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cargar_csv_ejecucion_ingresos_local():
+    """Carga el CSV local de ejecución de ingresos T4 2025"""
+    try:
+        archivo = "ejecucion_ingreso_2025t4.csv"
+        if not os.path.exists(archivo):
+            return pd.DataFrame()
+        
+        df = pd.read_csv(archivo, encoding='latin-1', sep=';', on_bad_lines='skip')
+        
+        # Normalizar nombres de columnas para que coincidan con API
+        columnas_mapeo = {
+            'CODIGO_ENTIDAD': 'codigo_entidad',
+            'NOMBRE_ENTIDAD': 'nombre_entidad',
+            'CUENTA': 'cuenta',
+            'NOMBRE_CUENTA': 'nombre_cuenta',
+            'TOTAL_RECAUDO': 'total_recaudo',
+            'PERIODO': 'periodo'
+        }
+        
+        # Conservar solo las columnas que existen y que necesitamos
+        cols_disponibles = [k for k in columnas_mapeo.keys() if k in df.columns]
+        df = df[cols_disponibles]
+        df = df.rename(columns={k: columnas_mapeo[k] for k in cols_disponibles})
+        
+        # Convertir tipos de datos
+        if 'codigo_entidad' in df.columns:
+            df['codigo_entidad'] = df['codigo_entidad'].astype(str)
+        if 'total_recaudo' in df.columns:
+            df['total_recaudo'] = df['total_recaudo'].apply(_limpiar_total_recaudo)
+        if 'periodo' in df.columns:
+            df['periodo'] = df['periodo'].astype(str)
+        
+        return df
+    except Exception as e:
+        st.warning(f"Error al cargar CSV local: {e}")
+        return pd.DataFrame()
+
 @st.cache_data(ttl=600, show_spinner=False)
 def obtener_ejecucion_ingresos(codigo_entidad, periodo):
     codigo_entidad = str(int(float(codigo_entidad)))
+    periodo = str(periodo)
+    
+    # Carga el CSV local
+    df_local = cargar_csv_ejecucion_ingresos_local()
+    
+    # Filtra el CSV local por código_entidad y periodo
+    df_local_filt = pd.DataFrame()
+    if not df_local.empty:
+        df_local_filt = df_local[
+            (df_local['codigo_entidad'] == codigo_entidad) & 
+            (df_local['periodo'] == periodo)
+        ].copy()
+    
+    # Para 2025-T4 (20251201), prioriza CSV local completamente
+    if periodo == "20251201" or periodo == 20251201:
+        if not df_local_filt.empty:
+            return df_local_filt
+    
+    # Para otros períodos, obtén de la API
     url = "https://www.datos.gov.co/resource/9axr-9gnb.csv"
     params = {
         "$where": f"codigo_entidad='{codigo_entidad}' AND periodo='{periodo}'",
         "$limit": 100000
     }
+    
+    df_api = pd.DataFrame()
     try:
         r = requests.get(url, params=params, timeout=60)
         r.raise_for_status()
-        df = pd.read_csv(io.StringIO(r.text))
-        if df.empty or df.isna().all().all():
-            return pd.DataFrame()
-        return df
+        df_api = pd.read_csv(io.StringIO(r.text))
+        if 'total_recaudo' in df_api.columns:
+            df_api['total_recaudo'] = df_api['total_recaudo'].apply(_limpiar_total_recaudo)
     except Exception as e:
-        st.warning(f"No se pudo obtener datos de ejecución de ingresos: {e}")
+        pass
+    
+    # Combina datos: si ambos existen, prefiere API pero complementa con local
+    if not df_api.empty and not df_local_filt.empty:
+        # Combina sin eliminar duplicados - solo agrega registros del local que no están en API
+        df_cuentas_api = set(zip(df_api.get('cuenta', []), df_api.get('nombre_cuenta', [])))
+        df_local_nuevo = df_local_filt[
+            ~df_local_filt.apply(
+                lambda row: (row.get('cuenta'), row.get('nombre_cuenta')) in df_cuentas_api,
+                axis=1
+            )
+        ]
+        df_combinado = pd.concat([df_api, df_local_nuevo], ignore_index=True, sort=False)
+        return df_combinado
+    elif not df_api.empty:
+        return df_api
+    elif not df_local_filt.empty:
+        return df_local_filt
+    else:
         return pd.DataFrame()
 
-@st.cache_data(ttl=86400)
-def obtener_resumen_wikipedia(municipio: str, departamento: str) -> str:
-    query = f"{municipio}, {departamento}"
-    try:
-        # Busca el título más relevante
-        titulo = wikipedia.search(query, results=1)[0]
-        # Extrae un extracto breve
-        resumen = wikipedia.summary(titulo, sentences=3, auto_suggest=False)
-        return resumen
-    except Exception as e:
-        return f"No se encontró información en Wikipedia: {e}"
+        
 
 
 # ------------------------------------------
@@ -162,7 +487,7 @@ df_mun, df_dep, df_per, df_cuentas = cargar_tablas_control()
 
 pagina = st.sidebar.selectbox(
     "Selecciona una página:",
-    ["Programación de Ingresos", "Comparativa Per Cápita", "Ejecución de Gastos", "Ejecución de Ingresos"]
+    ["Programación de Ingresos", "Comparativa Per Cápita", "Ejecución de Ingresos"]
 )
 
 
@@ -222,123 +547,404 @@ if pagina == "Programación de Ingresos":
         df_i = st.session_state['df_ingresos']
 
         with st.expander("Datos brutos", expanded=False):
-            st.dataframe(df_i.drop(columns=['presupuesto_inicial', 'presupuesto_definitivo'], errors='ignore'), use_container_width=True)
+            st.dataframe(
+                df_i.drop(columns=['presupuesto_inicial', 'presupuesto_definitivo'], errors='ignore'),
+                use_container_width=True
+            )
 
-        codigos = ["1", "1.1", "1.1.01.01.200", "1.1.01.02", "1.1.01.02.200", "1.1.01.02.300", "1.1.02.06.001", "1.2.06", "1.2.07", "1.1.01.01", "1.1.01.01.200", "1.1.01.02.200.01"]
-        df_fil = df_i[df_i['ambito_codigo'].astype(str).isin(codigos)] if 'ambito_codigo' in df_i.columns else df_i.copy()
+        # ── Helpers locales ───────────────────────────────────────────────
+        def fmt_mm_pi(valor_pesos):
+            try:
+                valor_pesos = float(valor_pesos)
+            except Exception:
+                valor_pesos = 0.0
+            m = valor_pesos / 1e6
+            if abs(m) >= 1000:
+                return f"$ {m/1000:,.1f} MM"
+            return f"$ {m:,.1f} M"
 
-        resumen = df_fil.copy()
-        resumen['Presupuesto Inicial']   = pd.to_numeric(resumen.get('cod_detalle_sectorial', 0), errors='coerce') / 1e6
-        resumen['Presupuesto Definitivo']= pd.to_numeric(resumen.get('nom_detalle_sectorial', 0), errors='coerce') / 1e6
-        resumen = resumen.rename(columns={
-            'ambito_codigo': 'Ámbito Código',
-            'ambito_nombre': 'Ámbito Nombre'
-        })
+        def pct_var(nuevo, viejo):
+            try:
+                nuevo = float(nuevo)
+                viejo = float(viejo)
+                if viejo == 0:
+                    return 0.0
+                return round((nuevo - viejo) / abs(viejo) * 100, 1)
+            except Exception:
+                return 0.0
 
-        # <-- Aquí ordenamos por Ámbito Código ascendente
-        resumen = resumen.sort_values('Ámbito Código', ascending=True)
+        def val_inicial(df, codigo):
+            fila = df[df['ambito_codigo'].astype(str) == str(codigo)]
+            return pd.to_numeric(fila['cod_detalle_sectorial'], errors='coerce').sum()
 
-        # Luego damos formato monetario
-        resumen['Presupuesto Inicial']   = resumen['Presupuesto Inicial']  .apply(lambda x: f"$ {x:,.2f}")
-        resumen['Presupuesto Definitivo']= resumen['Presupuesto Definitivo'] .apply(lambda x: f"$ {x:,.2f}")
+        def val_definitivo(df, codigo):
+            fila = df[df['ambito_codigo'].astype(str) == str(codigo)]
+            return pd.to_numeric(fila['nom_detalle_sectorial'], errors='coerce').sum()
 
-        st.subheader("Ingresos filtrados (millones de pesos)")
-        st.dataframe(
-            resumen[['Ámbito Código','Ámbito Nombre','Presupuesto Inicial','Presupuesto Definitivo']],
-            use_container_width=True, hide_index=True
+        df_base = df_i.copy() if 'ambito_codigo' in df_i.columns else pd.DataFrame()
+
+        total_ini  = val_inicial(df_base,  '1')
+        total_def  = val_definitivo(df_base, '1')
+        corr_ini   = val_inicial(df_base,  '1.1')
+        corr_def   = val_definitivo(df_base, '1.1')
+        trib_ini   = val_inicial(df_base,  '1.1.01')
+        trib_def   = val_definitivo(df_base, '1.1.01')
+        notrib_ini = val_inicial(df_base,  '1.1.02')
+        notrib_def = val_definitivo(df_base, '1.1.02')
+        cap_ini    = val_inicial(df_base,  '1.2')
+        cap_def    = val_definitivo(df_base, '1.2')
+
+        if trib_def == 0:
+            trib_ini = val_inicial(df_base, '1.1.01.01') + val_inicial(df_base, '1.1.01.02')
+            trib_def = val_definitivo(df_base, '1.1.01.01') + val_definitivo(df_base, '1.1.01.02')
+
+        st.subheader(f"Programación de ingresos — {ent} | {per_lab}")
+
+        def render_card_pi(titulo, definitivo, inicial, color):
+            variacion = pct_var(definitivo, inicial)
+            flecha    = "▲" if variacion >= 0 else "▼"
+            color_var = "#4CAF50" if variacion >= 0 else "#f44336"
+            st.markdown(f"""
+            <div style="background:#1e1e2e;border-left:4px solid {color};border-radius:10px;
+                        padding:16px 18px;margin:6px 0;">
+                <div style="font-size:11px;color:#aaa;text-transform:uppercase;
+                            letter-spacing:.05em;margin-bottom:8px;">{titulo}</div>
+                <div style="font-size:22px;font-weight:700;color:#fff;margin-bottom:4px;">
+                    {fmt_mm_pi(definitivo)}
+                </div>
+                <div style="font-size:11px;color:#aaa;margin-bottom:4px;">
+                    Inicial: {fmt_mm_pi(inicial)}
+                </div>
+                <div style="font-size:12px;color:{color_var};font-weight:600;">
+                    {flecha} {abs(variacion):.1f}% vs inicial
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            render_card_pi("Total ingresos",     total_def,  total_ini,  "#4CAF50")
+        with c2:
+            render_card_pi("Corrientes",          corr_def,   corr_ini,   "#2196F3")
+        with c3:
+            render_card_pi("Tributarios",         trib_def,   trib_ini,   "#00BCD4")
+        with c4:
+            render_card_pi("No tributarios",      notrib_def, notrib_ini, "#9C27B0")
+        with c5:
+            render_card_pi("Recursos de capital", cap_def,    cap_ini,    "#FF9800")
+
+        st.caption(
+            "Valores en pesos. Definitivo = presupuesto ajustado. "
+            "La flecha muestra la variación del definitivo respecto al inicial."
         )
 
-        total_presupuesto = pd.to_numeric(df_fil[df_fil['ambito_codigo'].astype(str) == '1']['nom_detalle_sectorial'], errors='coerce').sum() / 1e6
-        st.subheader("Ingreso total - Presupuesto definitivo (millones de pesos)")
-        st.metric(label="Total", value=f"$ {total_presupuesto:,.2f}")
+        st.markdown("---")
+        st.subheader("Principales ingresos tributarios")
 
+        def hijas_ambito(df, prefijo_padre, nivel_hijo):
+            mask = (
+                df['ambito_codigo'].astype(str).str.startswith(prefijo_padre + '.') |
+                (df['ambito_codigo'].astype(str) == prefijo_padre)
+            )
+            sub = df[mask].copy()
+            sub['_nivel'] = sub['ambito_codigo'].astype(str).apply(lambda c: len(c.split('.')))
+            return sub[sub['_nivel'] == nivel_hijo].copy()
 
-        # Histórico nominal vs real
-        st.subheader("Histórico Ingresos nominal vs real (millones de pesos)")
-        df_hist = obtener_ingresos_filtrados(cod_ent)
-        df_hist = df_hist[df_hist['ambito_nombre'].str.upper() == 'INGRESOS']
+        def preparar_top_prog(df_sub, denominador_def, denominador_grupo_def, nombre_pct_grupo, top_n=9):
+            df_sub = df_sub.copy()
+            if df_sub.empty:
+                return df_sub
+            df_sub['ini']  = pd.to_numeric(df_sub['cod_detalle_sectorial'], errors='coerce').fillna(0)
+            df_sub['def_'] = pd.to_numeric(df_sub['nom_detalle_sectorial'], errors='coerce').fillna(0)
+            df_sub = df_sub[df_sub['def_'] > 0].copy()
+            if df_sub.empty:
+                return df_sub
+            df_sub['pct_total'] = df_sub['def_'].apply(
+                lambda x: round(x / denominador_def * 100, 1) if denominador_def > 0 else 0.0
+            )
+            df_sub['pct_grupo'] = df_sub['def_'].apply(
+                lambda x: round(x / denominador_grupo_def * 100, 1) if denominador_grupo_def > 0 else 0.0
+            )
+            df_sub['pct_var']   = df_sub.apply(lambda r: pct_var(r['def_'], r['ini']), axis=1)
+            df_sub['nombre_pct_grupo'] = nombre_pct_grupo
+            df_sub = df_sub.sort_values('def_', ascending=False).head(top_n).reset_index(drop=True)
+            return df_sub
 
-        df_hist['periodo_dt'] = pd.to_datetime(df_hist['periodo'], format='%Y%m%d', errors='coerce')
-        df_hist['year'] = df_hist['periodo_dt'].dt.year
-        df_hist['md'] = df_hist['periodo_dt'].dt.strftime('%m%d')
+        def render_cards_prog(df_sub, color):
+            if df_sub.empty:
+                return
+            for i in range(0, len(df_sub), 3):
+                fila = df_sub.iloc[i:i+3]
+                cols = st.columns(len(fila))
+                for col, (_, row) in zip(cols, fila.iterrows()):
+                    nombre   = str(row['ambito_nombre']).title() if 'ambito_nombre' in row else str(row['ambito_codigo'])
+                    flecha   = "▲" if row['pct_var'] >= 0 else "▼"
+                    col_flecha = "#4CAF50" if row['pct_var'] >= 0 else "#f44336"
+                    with col:
+                        st.markdown(f"""
+                        <div style="background:#1e1e2e;border-left:4px solid {color};border-radius:10px;
+                                    padding:14px 16px;margin:6px 0;">
+                            <div style="font-size:11px;color:#aaa;text-transform:uppercase;
+                                        letter-spacing:.04em;margin-bottom:6px;line-height:1.4;">
+                                {nombre}
+                            </div>
+                            <div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:2px;">
+                                {fmt_mm_pi(row['def_'])}
+                            </div>
+                            <div style="font-size:11px;color:#aaa;margin-bottom:4px;">
+                                Inicial: {fmt_mm_pi(row['ini'])}
+                            </div>
+                            <div style="font-size:12px;color:{color};">
+                                <b>{row['pct_total']}%</b> del total
+                                &nbsp;·&nbsp;
+                                <b>{row['pct_grupo']}%</b> {row['nombre_pct_grupo']}
+                            </div>
+                            <div style="font-size:11px;color:{col_flecha};">
+                                {flecha} {abs(row['pct_var']):.1f}% vs inicial
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-        registros = []
-        current = df_hist['year'].max()
-        for yr, grp in df_hist.groupby('year'):
-            if yr != current:
-                q4 = grp[grp['md'] == '1201']
-                if not q4.empty:
-                    registros.append(q4.loc[q4['periodo_dt'].idxmax()])
-            else:
-                registros.append(grp.loc[grp['periodo_dt'].idxmax()])
+        def render_tabla_prog(df_sub, etiqueta):
+            if df_sub.empty:
+                return df_sub
+            tabla = df_sub[['ambito_codigo', 'ambito_nombre', 'ini', 'def_', 'pct_var', 'pct_total', 'pct_grupo']].copy()
+            tabla.columns = ['Código', etiqueta, 'Inicial', 'Definitivo', '% var vs inicial', '% del total', tabla.columns[-1]]
+            tabla.columns = ['Código', etiqueta, 'Inicial', 'Definitivo', '% var vs inicial', '% del total', df_sub['nombre_pct_grupo'].iloc[0]]
+            fmt = {
+                'Inicial':           lambda x: fmt_mm_pi(x),
+                'Definitivo':        lambda x: fmt_mm_pi(x),
+                '% var vs inicial':  lambda x: f"{x:+.1f}%",
+                '% del total':       lambda x: f"{x:.1f}%",
+                tabla.columns[-1]:   lambda x: f"{x:.1f}%",
+            }
+            st.dataframe(tabla.style.format(fmt), use_container_width=True, hide_index=True)
+            return tabla
 
-        df_sel = pd.DataFrame(registros).sort_values('periodo_dt')
-        df_sel['presupuesto_definitivo'] = pd.to_numeric(df_sel['nom_detalle_sectorial'], errors='coerce')
-        df_sel['Ingresos Nominales'] = df_sel['presupuesto_definitivo'] / 1e6
+        def render_grafico_prog(df_sub, color, titulo_x):
+            if df_sub.empty:
+                return
+            df_ch = df_sub.copy()
+            df_ch['def_mm'] = df_ch['def_'] / 1e9
+            df_ch['ini_mm'] = df_ch['ini']  / 1e9
+            df_ch['nombre_corto'] = df_ch['ambito_nombre'].astype(str).str.upper().str.slice(0, 50) \
+                if 'ambito_nombre' in df_ch.columns else df_ch['ambito_codigo'].astype(str)
+            df_ch = df_ch[df_ch['def_mm'] > 0].sort_values('def_mm', ascending=True)
+            if df_ch.empty:
+                return
+            max_x = max(df_ch['def_mm'].max(), df_ch['ini_mm'].max()) * 1.15
+            df_long_ch = pd.melt(
+                df_ch,
+                id_vars=['nombre_corto', 'ambito_codigo'],
+                value_vars=['ini_mm', 'def_mm'],
+                var_name='tipo',
+                value_name='valor_mm'
+            )
+            df_long_ch['tipo'] = df_long_ch['tipo'].map({'ini_mm': 'Inicial', 'def_mm': 'Definitivo'})
+            chart_b = alt.Chart(df_long_ch).mark_bar(opacity=0.85).encode(
+                x=alt.X('valor_mm:Q',
+                        title=titulo_x,
+                        scale=alt.Scale(domain=[0, max_x]),
+                        axis=alt.Axis(format='$,.2f')),
+                y=alt.Y('nombre_corto:N', sort=None, title='',
+                        axis=alt.Axis(labelLimit=260)),
+                color=alt.Color('tipo:N',
+                                scale=alt.Scale(
+                                    domain=['Inicial', 'Definitivo'],
+                                    range=['#90CAF9', color]
+                                ),
+                                legend=alt.Legend(title='')),
+                yOffset=alt.YOffset('tipo:N'),
+                tooltip=[
+                    alt.Tooltip('ambito_codigo:N', title='Código'),
+                    alt.Tooltip('nombre_corto:N',  title='Cuenta'),
+                    alt.Tooltip('tipo:N',           title='Tipo'),
+                    alt.Tooltip('valor_mm:Q', format='$,.2f', title='Miles de millones'),
+                ]
+            ).properties(height=max(280, len(df_ch) * 50))
+            st.altair_chart(chart_b, use_container_width=True)
 
-        ipc_map = {2021: 111.41, 2022: 126.03, 2023: 137.09, 2024: 144.88}
-        df_sel['ipc'] = df_sel['periodo_dt'].dt.year.map(ipc_map)
-        df_sel['Ingresos Reales'] = df_sel['Ingresos Nominales'] / df_sel['ipc'] * 100
+        df_trib_dir  = hijas_ambito(df_base, '1.1.01.01', 5)
+        df_trib_ind  = hijas_ambito(df_base, '1.1.01.02', 5)
+        df_trib_top  = pd.concat([df_trib_dir, df_trib_ind], ignore_index=True)
+        df_trib_top  = preparar_top_prog(df_trib_top, total_def, trib_def, 'de tributarios', top_n=9)
 
-        df_long = df_sel.melt(id_vars=['periodo_dt'], 
-                              value_vars=['Ingresos Nominales', 'Ingresos Reales'],
-                              var_name='Tipo', value_name='Monto')
+        render_cards_prog(df_trib_top, '#00BCD4')
+        st.markdown("#### Detalle tributario")
+        render_tabla_prog(df_trib_top, 'Ingreso tributario')
+        render_grafico_prog(df_trib_top, '#00BCD4', 'Miles de millones de pesos')
 
-        min_valor = df_long['Monto'].min() * 0.95
+        st.markdown("---")
+        st.subheader("Principales ingresos no tributarios")
 
-        chart = alt.Chart(df_long).mark_line(point=True).encode(
-            x=alt.X('year(periodo_dt):O', title='Periodo'),
-            y=alt.Y('Monto:Q', title='Ingresos Q4 (millones)', scale=alt.Scale(domainMin=min_valor), axis=alt.Axis(format='$,.0f')),
-            color='Tipo:N',
-            tooltip=['periodo_dt', 'Tipo', alt.Tooltip('Monto:Q', format='$,.0f')]
-        ).properties(width=700, height=350)
+        df_notrib_top = hijas_ambito(df_base, '1.1.02', 4)
+        df_notrib_top = preparar_top_prog(df_notrib_top, total_def, notrib_def, 'de no tributarios', top_n=9)
 
-        st.altair_chart(chart, use_container_width=True)
+        render_cards_prog(df_notrib_top, '#9C27B0')
+        st.markdown("#### Detalle no tributario")
+        render_tabla_prog(df_notrib_top, 'Ingreso no tributario')
+        render_grafico_prog(df_notrib_top, '#9C27B0', 'Miles de millones de pesos')
 
-                                       # ————— Exportar a Excel —————
-        st.markdown("")
+        st.caption(
+            "Tributarios: hijas de impuestos directos (1.1.01.01) e indirectos (1.1.01.02). "
+            "No tributarios: hijas de 1.1.02. Cada barra muestra inicial (azul claro) y "
+            "definitivo (color sólido) para ver el ajuste presupuestal."
+        )
 
+        st.markdown("---")
+        st.subheader("Histórico — inicial y definitivo (millones de pesos)")
+
+        with st.spinner("Cargando histórico..."):
+            df_hist_all = obtener_ingresos_filtrados(cod_ent)
+
+        registros_hist = []
+        if not df_hist_all.empty and 'ambito_codigo' in df_hist_all.columns:
+            df_hist_all['periodo_dt'] = pd.to_datetime(
+                df_hist_all['periodo'].astype(str).str.zfill(8), format='%Y%m%d', errors='coerce'
+            )
+            df_hist_all = df_hist_all.dropna(subset=['periodo_dt'])
+            df_hist_all['year'] = df_hist_all['periodo_dt'].dt.year
+            df_hist_all['md']   = df_hist_all['periodo_dt'].dt.strftime('%m%d')
+
+            df_h1 = df_hist_all[df_hist_all['ambito_codigo'].astype(str) == '1'].copy()
+            df_h1['ini_val'] = pd.to_numeric(df_h1['cod_detalle_sectorial'], errors='coerce').fillna(0)
+            df_h1['def_val'] = pd.to_numeric(df_h1['nom_detalle_sectorial'], errors='coerce').fillna(0)
+
+            anio_actual_h = int(df_h1['year'].max()) if not df_h1.empty else 0
+            for yr, grp in df_h1.groupby('year'):
+                if yr != anio_actual_h:
+                    corte = grp[grp['md'] == '1201']
+                    if corte.empty:
+                        corte = grp[grp['periodo_dt'] == grp['periodo_dt'].max()]
+                else:
+                    corte = grp[grp['periodo_dt'] == grp['periodo_dt'].max()]
+                if not corte.empty:
+                    registros_hist.append({
+                        'año':        yr,
+                        'periodo_dt': corte['periodo_dt'].max(),
+                        'inicial':    corte['ini_val'].sum(),
+                        'definitivo': corte['def_val'].sum(),
+                    })
+
+        if registros_hist:
+            df_hist_serie = pd.DataFrame(registros_hist).sort_values('año').reset_index(drop=True)
+            df_hist_serie['Inicial']    = (df_hist_serie['inicial']    / 1e6).round(1)
+            df_hist_serie['Definitivo'] = (df_hist_serie['definitivo'] / 1e6).round(1)
+
+            df_hist_long = pd.melt(
+                df_hist_serie,
+                id_vars=['año'],
+                value_vars=['Inicial', 'Definitivo'],
+                var_name='Serie',
+                value_name='Monto'
+            ).dropna(subset=['Monto'])
+
+            min_val_h = df_hist_long['Monto'].min() * 0.9
+            color_scale_h = alt.Scale(
+                domain=['Inicial', 'Definitivo'],
+                range=['#90CAF9', '#2196F3']
+            )
+            chart_hist = (
+                alt.Chart(df_hist_long)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X('año:O', title='Año'),
+                    y=alt.Y('Monto:Q',
+                            title='Millones de pesos',
+                            scale=alt.Scale(domainMin=min_val_h),
+                            axis=alt.Axis(format='$,.0f')),
+                    color=alt.Color('Serie:N',
+                                    scale=color_scale_h,
+                                    legend=alt.Legend(title='Serie')),
+                    tooltip=[
+                        alt.Tooltip('año:O',    title='Año'),
+                        alt.Tooltip('Serie:N',  title='Serie'),
+                        alt.Tooltip('Monto:Q',  format='$,.1f', title='Millones COP'),
+                    ]
+                )
+                .properties(width=700, height=380)
+            )
+            st.altair_chart(chart_hist, use_container_width=True)
+
+            if len(df_hist_serie) >= 2:
+                p = df_hist_serie.iloc[0]
+                u = df_hist_serie.iloc[-1]
+                var_def = pct_var(u['Definitivo'], p['Definitivo'])
+                st.markdown(
+                    f"El presupuesto definitivo pasó de **$ {p['Definitivo']:,.1f} M** ({int(p['año'])}) "
+                    f"a **$ {u['Definitivo']:,.1f} M** ({int(u['año'])}), "
+                    f"variación de **{var_def:+.1f}%** en términos nominales."
+                )
+            st.caption(
+                "Inicial: presupuesto aprobado. Definitivo: presupuesto ajustado (adiciones/reducciones). "
+                "Fuente: API datos.gov.co — Programación de Ingresos."
+            )
+        else:
+            st.info("No hay datos históricos suficientes para esta entidad.")
+
+        st.markdown("---")
+        st.subheader("Detalle presupuestal completo")
+
+        df_detalle = df_base.copy()
+        df_detalle['Inicial']    = pd.to_numeric(df_detalle['cod_detalle_sectorial'], errors='coerce').fillna(0)
+        df_detalle['Definitivo'] = pd.to_numeric(df_detalle['nom_detalle_sectorial'], errors='coerce').fillna(0)
+        df_detalle['% var']      = df_detalle.apply(lambda r: pct_var(r['Definitivo'], r['Inicial']), axis=1)
+        df_detalle = df_detalle.rename(columns={
+            'ambito_codigo': 'Código',
+            'ambito_nombre': 'Nombre'
+        }).sort_values('Código', ascending=True)
+
+        fmt_detalle = {
+            'Inicial':    lambda x: fmt_mm_pi(x),
+            'Definitivo': lambda x: fmt_mm_pi(x),
+            '% var':      lambda x: f"{x:+.1f}%",
+        }
+        cols_detalle = [c for c in ['Código', 'Nombre', 'Inicial', 'Definitivo', '% var'] if c in df_detalle.columns]
+        st.dataframe(
+            df_detalle[cols_detalle].style.format(fmt_detalle),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.markdown("---")
         output = io.BytesIO()
 
-        # 1. Preparar hoja de datos brutos
         df_brutos_export = df_i.drop(columns=['presupuesto_inicial', 'presupuesto_definitivo'], errors='ignore').copy()
         df_brutos_export = df_brutos_export.rename(columns={
             'cod_detalle_sectorial': 'presupuestoinicial',
             'nom_detalle_sectorial': 'presupuestodefinitivo'
         })
-
-        # Ordenar por ambito_codigo ascendente
         if 'ambito_codigo' in df_brutos_export.columns:
             df_brutos_export = df_brutos_export.sort_values('ambito_codigo', ascending=True)
 
-        # 2. Preparar hoja resumen
-        df_resumen_export = resumen[['Ámbito Código','Ámbito Nombre','Presupuesto Inicial','Presupuesto Definitivo']]
-
-        # 3. Preparar hoja histórico nominal vs real
-        df_hist_export = df_sel[['periodo_dt', 'Ingresos Nominales', 'Ingresos Reales']]
-
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            wb  = writer.book
+            wb           = writer.book
+            currency_fmt = wb.add_format({'num_format': '$#,##0.00'})
+            pct_fmt      = wb.add_format({'num_format': '+0.0%;-0.0%'})
 
-            # Datos Brutos
             df_brutos_export.to_excel(writer, index=False, sheet_name='Datos Brutos')
             ws0 = writer.sheets['Datos Brutos']
-            # formato de moneda solo para las dos columnas de presupuesto
-            currency_fmt = wb.add_format({'num_format': '$#,##0.00'})
-            for col_name in ['presupuestoinicial','presupuestodefinitivo']:
+            for col_name in ['presupuestoinicial', 'presupuestodefinitivo']:
                 if col_name in df_brutos_export.columns:
-                    col_idx = df_brutos_export.columns.get_loc(col_name)
-                    ws0.set_column(col_idx, col_idx, None, currency_fmt)
+                    idx_c = df_brutos_export.columns.get_loc(col_name)
+                    ws0.set_column(idx_c, idx_c, None, currency_fmt)
 
-            # Resumen (mantener como antes)
-            df_resumen_export.to_excel(writer, index=False, sheet_name='Resumen')
-            ws1 = writer.sheets['Resumen']
-            ws1.set_column(2, 3, None, currency_fmt)
+            df_detalle[cols_detalle].to_excel(writer, index=False, sheet_name='Detalle presupuestal')
+            ws1 = writer.sheets['Detalle presupuestal']
+            ws1.set_column(0, 0, 18)
+            ws1.set_column(1, 1, 40)
+            ws1.set_column(2, 3, 20, currency_fmt)
+            ws1.set_column(4, 4, 14, pct_fmt)
 
-            # Histórico
-            df_hist_export.to_excel(writer, index=False, sheet_name='Histórico')
-            ws2 = writer.sheets['Histórico']
-            ws2.set_column(1, 2, None, currency_fmt)
+            if registros_hist:
+                df_hist_serie[['año', 'Inicial', 'Definitivo']].to_excel(
+                    writer, index=False, sheet_name='Histórico'
+                )
+                ws2 = writer.sheets['Histórico']
+                ws2.set_column(1, 2, 18, currency_fmt)
+
+            for sheet_name, ws in writer.sheets.items():
+                ws.freeze_panes(1, 0)
 
         st.download_button(
             label="Excel",
@@ -416,47 +1022,203 @@ elif pagina == "Comparativa Per Cápita":
     )
 
     # Ejecutar comparativa
+
+    def obtener_ejecucion_ingresos_comparativa(periodo, cuenta_codigo):
+        """
+        Devuelve una base agregada por entidad para la comparativa per cápita
+        usando ejecución de ingresos. Solo se usa para periodo 20251201.
+        """
+        df = cargar_csv_ejecucion_ingresos_local()
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df["periodo"] = df["periodo"].astype(str).str.strip()
+        df["codigo_entidad"] = df["codigo_entidad"].astype(str).str.strip()
+        df["cuenta"] = df["cuenta"].astype(str).str.strip()
+        df["total_recaudo"] = pd.to_numeric(df["total_recaudo"], errors="coerce").fillna(0)
+
+        df = df[
+            (df["periodo"] == str(periodo)) &
+            (df["cuenta"] == str(cuenta_codigo))
+        ].copy()
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df_sum = (
+            df.groupby("codigo_entidad", as_index=False)["total_recaudo"]
+              .sum()
+              .rename(columns={"total_recaudo": "valor_total"})
+        )
+
+        return df_sum
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def obtener_ejecucion_comparativa_todos_periodos(periodo, cuenta_codigo):
+        """
+        Devuelve recaudo real (total_recaudo) agregado por codigo_entidad
+        para la comparativa per cápita. Para 20251201 usa CSV local.
+        Para otros períodos usa la API 9axr-9gnb (ejecución de ingresos).
+        Retorna DataFrame con columnas: codigo_entidad, valor_total.
+        """
+        periodo       = str(periodo).strip()
+        cuenta_codigo = str(cuenta_codigo).strip()
+
+        if periodo == "20251201":
+            df = cargar_csv_ejecucion_ingresos_local()
+            if df.empty:
+                return pd.DataFrame()
+            df["periodo"]        = df["periodo"].astype(str).str.strip()
+            df["codigo_entidad"] = df["codigo_entidad"].astype(str).str.strip()
+            df["cuenta"]         = df["cuenta"].astype(str).str.strip()
+            df["total_recaudo"]  = pd.to_numeric(df["total_recaudo"], errors="coerce").fillna(0)
+            df = df[(df["periodo"] == periodo) & (df["cuenta"] == cuenta_codigo)].copy()
+            if df.empty:
+                return pd.DataFrame()
+            return (
+                df.groupby("codigo_entidad", as_index=False)["total_recaudo"]
+                  .sum()
+                  .rename(columns={"total_recaudo": "valor_total"})
+            )
+
+        # Otros períodos: API ejecución de ingresos
+        url = "https://www.datos.gov.co/resource/9axr-9gnb.csv"
+        params = {
+            "$where":  f"periodo='{periodo}' AND cuenta='{cuenta_codigo}'",
+            "$select": "codigo_entidad,total_recaudo",
+            "$limit":  100000,
+        }
+        try:
+            r = requests.get(url, params=params, timeout=60)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+            if df.empty:
+                return pd.DataFrame()
+            df["codigo_entidad"] = df["codigo_entidad"].astype(str).str.strip()
+            df["total_recaudo"]  = df["total_recaudo"].apply(_limpiar_total_recaudo)
+            return (
+                df.groupby("codigo_entidad", as_index=False)["total_recaudo"]
+                  .sum()
+                  .rename(columns={"total_recaudo": "valor_total"})
+            )
+        except Exception as e:
+            st.warning(f"No se pudo obtener datos de ejecución para la comparativa: {e}")
+            return pd.DataFrame()
+
     if st.button("Ejecutar comparativa", key="btn_ejecutar_comp"):
         # Limpiar informe previo
         if 'informe' in st.session_state:
             del st.session_state['informe']
-        # Obtener datos
-        ambito_code = df_cuentas.loc[df_cuentas['Nombre de la Cuenta']==cuenta_sel,'Código Completo'].iloc[0]
-        resp = requests.get(
-            "https://www.datos.gov.co/resource/22ah-ddsj.csv",
-            params={"$limit":100000, "$where": f"periodo='{periodo}' AND ambito_codigo='{ambito_code}'"},
-            timeout=60
-        )
-        if resp.status_code != 200:
-            st.warning("No se encontraron datos para esta cuenta.")
+
+        cuenta_codigo = str(
+            df_cuentas.loc[
+                df_cuentas["Nombre de la Cuenta"] == cuenta_sel,
+                "Código Completo"
+            ].iloc[0]
+        ).strip()
+
+        df_sum = obtener_ejecucion_comparativa_todos_periodos(periodo, cuenta_codigo)
+
+        if df_sum.empty:
+            st.warning("No se encontraron datos de ejecución de ingresos para esta cuenta y período.")
             st.stop()
-        df_all = pd.read_csv(io.StringIO(resp.text))
-        df_all['presupuesto_definitivo'] = pd.to_numeric(df_all['nom_detalle_sectorial'], errors='coerce')
-        # Sumar por entidad
-        df_sum = df_all.groupby('codigo_entidad', as_index=False)['presupuesto_definitivo'].sum()
+
         # Filtrar población por año del periodo
         year = int(periodo[:4])
-        df_pop = df_entities[df_entities['año'] == year][['codigo_entidad','nombre_entidad','poblacion','categoria']]
+
+        _cols_pop = ['codigo_entidad', 'nombre_entidad', 'poblacion', 'categoria']
+        if nivel == "Municipios" and 'departamento' in df_entities.columns:
+            _cols_pop.append('departamento')
+        elif nivel != "Municipios":
+            for _c in ['region', 'departamento']:
+                if _c in df_entities.columns:
+                    _cols_pop.append(_c)
+                    break
+        df_pop = df_entities[df_entities['año'] == year][_cols_pop].copy()
+
+        # Normalizar llave 'codigo_entidad' en ambas tablas antes del merge
+        if 'codigo_entidad' in df_sum.columns:
+            df_sum['codigo_entidad'] = df_sum['codigo_entidad'].apply(normalizar_codigo_entidad)
+        df_pop['codigo_entidad'] = df_pop['codigo_entidad'].apply(normalizar_codigo_entidad)
+        codigo_entidad = normalizar_codigo_entidad(codigo_entidad)
+
         # Merge con población específica del año
         df_sum = df_sum.merge(
             df_pop,
             on='codigo_entidad', how='left'
         ).dropna(subset=['poblacion'])
-        df_sum['per_capita'] = df_sum['presupuesto_definitivo'] / df_sum['poblacion']
+
+        # Normalizar columna monetaria a 'valor_total' y calcular per cápita
+        df_sum['per_capita'] = df_sum['valor_total'] / df_sum['poblacion']
+
+        # ── Comparativa departamental ─────────────────────────────────────
+        _col_geo = None
+        if nivel == "Municipios" and 'departamento' in df_sum.columns:
+            _col_geo = 'departamento'
+        elif nivel != "Municipios":
+            for _c in ['region', 'departamento']:
+                if _c in df_sum.columns:
+                    _col_geo = _c
+                    break
+
+        df_depto = pd.DataFrame()
         sel = df_sum[df_sum['codigo_entidad'] == codigo_entidad]
+        if _col_geo is not None and not sel.empty and _col_geo in sel.columns:
+            _geo_val = sel[_col_geo].iloc[0]
+            if pd.notna(_geo_val):
+                df_depto = (
+                    df_sum[df_sum[_col_geo] == _geo_val][
+                        ['nombre_entidad', 'codigo_entidad', 'per_capita']
+                    ]
+                    .copy()
+                )
+                df_depto = (
+                    df_depto[df_depto['per_capita'] > 0]
+                    .sort_values('per_capita', ascending=True)
+                    .reset_index(drop=True)
+                )
+
+        # ── Ranking y percentil dentro de la categoría ───────────────────
+        cat_seleccionada = None
+        if not sel.empty:
+            cat_seleccionada = sel['categoria'].iloc[0]
+        df_cat_ranking = (
+            df_sum[(df_sum['categoria'] == cat_seleccionada) & (df_sum['per_capita'] > 0)]
+            .copy()
+            .sort_values('per_capita', ascending=False)
+            .reset_index(drop=True)
+        )
+        df_cat_ranking['ranking'] = df_cat_ranking.index + 1
+        total_categoria_n = len(df_cat_ranking)
+        fila_ranking = df_cat_ranking[df_cat_ranking['codigo_entidad'] == codigo_entidad]
+        ranking_sel = int(fila_ranking['ranking'].iloc[0]) if not fila_ranking.empty else None
+        percentil_sel = (
+            round((1 - (ranking_sel - 1) / total_categoria_n) * 100, 1)
+            if ranking_sel is not None and total_categoria_n > 0
+            else None
+        )
         if sel.empty:
             st.warning(f"No hay datos para la cuenta en este {label.lower()}.")
             st.stop()
         # Guardar en state
         st.session_state.update({
-            'entity': ent,
-            'label': label,
-            'cat': sel['categoria'].iloc[0],
-            'pc_sel': sel['per_capita'].iloc[0],
-            'pc_cat': df_sum[df_sum['categoria']==sel['categoria'].iloc[0]]['per_capita'].mean(),
-            'pc_all': df_sum['per_capita'].mean(),
-            'periodo': periodo
+            'entity':              ent,
+            'label':               label,
+            'cat':                 sel['categoria'].iloc[0],
+            'pc_sel':              sel['per_capita'].iloc[0],
+            'pc_cat':              df_sum[df_sum['categoria'] == sel['categoria'].iloc[0]]['per_capita'].mean(),
+            'pc_all':              df_sum['per_capita'].mean(),
+            'periodo':             periodo,
+            'ranking_sel':         ranking_sel,
+            'total_categoria_n':   total_categoria_n,
+            'percentil_sel':       percentil_sel,
+            'codigo_entidad_norm': codigo_entidad,
+            'df_distribucion':     df_cat_ranking[['nombre_entidad', 'codigo_entidad', 'per_capita', 'ranking']].copy(),
+            'df_depto':            df_depto,
+            'col_geo':             _col_geo,
         })
+
         # Preparar datos de plot
         df_plot = pd.DataFrame({
             'Tipo': [ent, f"Promedio Cat. ({st.session_state['cat']})", 'Promedio País'],
@@ -499,9 +1261,9 @@ elif pagina == "Comparativa Per Cápita":
         st.session_state['df_bar_fmt'] = df_plot[['Tipo','COP per cápita']]
         df_cat = (
             df_sum[df_sum['categoria']==st.session_state['cat']][
-                ['nombre_entidad','per_capita','presupuesto_definitivo']
+                ['nombre_entidad','per_capita','valor_total']
             ]
-            .rename(columns={'nombre_entidad': label, 'per_capita':'Per cápita','presupuesto_definitivo':'Valor Absoluto (millones)'})
+            .rename(columns={'nombre_entidad': label, 'per_capita':'Per cápita','valor_total':'Valor Absoluto (millones)'})
         )
         df_cat['Valor Absoluto (millones)'] /= 1e6
         df_cat['Per cápita'] = df_cat['Per cápita'].map(lambda v: f"$ {v:,.0f}")
@@ -510,10 +1272,95 @@ elif pagina == "Comparativa Per Cápita":
 
     # Mostrar resultados si existen
     if 'chart' in st.session_state:
+
+        # ── Métricas de posicionamiento ───────────────────────────────────
+        if st.session_state.get('ranking_sel') is not None:
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric(
+                    label=f"Per cápita — {st.session_state['entity']}",
+                    value=f"$ {st.session_state['pc_sel']:,.0f}",
+                )
+            with m2:
+                st.metric(
+                    label=f"Ranking en categoría {st.session_state['cat']}",
+                    value=f"{st.session_state['ranking_sel']} de {st.session_state['total_categoria_n']}",
+                )
+            with m3:
+                st.metric(
+                    label="Percentil en la categoría",
+                    value=f"{st.session_state['percentil_sel']}%",
+                    help="100% = mayor per cápita. Ej.: 75% significa que supera al 75% de entidades de la misma categoría.",
+                )
+
+        # ── Gráfico de barras original (sin cambios) ──────────────────────
         st.subheader(f"Gráfico comparativo ({st.session_state['label']})")
         st.altair_chart(st.session_state['chart'], use_container_width=True)
         st.subheader(f"Valores per cápita ({st.session_state['label']})")
         st.dataframe(st.session_state['df_bar_fmt'], use_container_width=True, hide_index=True)
+
+        # ── Bar chart comparativa departamental ───────────────────────────
+        if 'df_depto' in st.session_state and not st.session_state['df_depto'].empty:
+            _entity   = st.session_state['entity']
+            _cod_norm = st.session_state['codigo_entidad_norm']
+            _col_geo  = st.session_state.get('col_geo', 'departamento')
+            _geo_lbl  = 'departamento' if _col_geo == 'departamento' else 'región'
+
+            df_d = st.session_state['df_depto'].copy()
+            df_d['color_grupo']    = df_d['codigo_entidad'].apply(
+                lambda c: _entity if c == _cod_norm else 'Otros'
+            )
+            df_d['per_capita_fmt'] = df_d['per_capita'].apply(lambda x: f"$ {x:,.0f}")
+            df_d['nombre_corto']   = df_d['nombre_entidad'].astype(str).str.slice(0, 45)
+
+            _n_munis  = len(df_d)
+            _max_val  = df_d['per_capita'].max() * 1.15
+
+            st.subheader(
+                f"Comparativa per cápita — {st.session_state['label']}s "
+                f"del mismo {_geo_lbl} ({_n_munis} entidades)"
+            )
+
+            bar_depto = (
+                alt.Chart(df_d)
+                .mark_bar(cornerRadius=3)
+                .encode(
+                    x=alt.X(
+                        'per_capita:Q',
+                        title='COP per cápita',
+                        scale=alt.Scale(domain=[0, _max_val]),
+                        axis=alt.Axis(format='$,.0f'),
+                    ),
+                    y=alt.Y(
+                        'nombre_corto:N',
+                        sort=None,
+                        title='',
+                        axis=alt.Axis(labelLimit=200),
+                    ),
+                    color=alt.Color(
+                        'color_grupo:N',
+                        scale=alt.Scale(
+                            domain=[_entity, 'Otros'],
+                            range=['orange', '#4682b4'],
+                        ),
+                        legend=alt.Legend(title=''),
+                    ),
+                    tooltip=[
+                        alt.Tooltip('nombre_entidad:N', title=st.session_state['label']),
+                        alt.Tooltip('per_capita_fmt:N', title='Per cápita'),
+                    ],
+                )
+                .properties(height=max(300, _n_munis * 22))
+            )
+
+            st.altair_chart(bar_depto, use_container_width=True)
+            st.caption(
+                f"Barras ordenadas de menor a mayor per cápita. "
+                f"Barra naranja: {_entity}. "
+                f"Fuente: ejecución real de ingresos (recaudo efectivo)."
+            )
+
+        # ── Tabla por categoría (sin cambios) ─────────────────────────────
         st.subheader(f"Valores per cápita por {st.session_state['label'].lower()} en misma categoría")
         st.dataframe(st.session_state['df_cat'], use_container_width=True, hide_index=True)
 
@@ -768,7 +1615,8 @@ elif pagina == "Ejecución de Gastos":
     periodo = str(per_dict[per_lab])
 
     if st.sidebar.button("Cargar datos de gastos", key="btn_cargar_gastos"):
-        with st.spinner("Obteniendo datos desde la API..."):
+        # ── Texto del spinner actualizado ─────────────────────────────────
+        with st.spinner("Cargando datos de gastos…"):
             df_gastos = obtener_datos_gastos(codigo_ent, periodo)
             st.session_state["df_gastos"] = df_gastos
 
@@ -1394,7 +2242,7 @@ elif pagina == "Ejecución de Ingresos":
     # PASO 1 — Agrupar: una fila por cuenta (elimina duplicados por fuente,
     #          tercero, detalle sectorial, etc.)
     # ════════════════════════════════════════════════════════════════════════
-    df_raw['total_recaudo'] = pd.to_numeric(df_raw['total_recaudo'], errors='coerce').fillna(0)
+    df_raw['total_recaudo'] = df_raw['total_recaudo'].apply(_limpiar_total_recaudo)
     df_raw['cuenta']        = df_raw['cuenta'].astype(str).str.strip()
 
     base = df_raw.groupby(
@@ -1564,10 +2412,7 @@ elif pagina == "Ejecución de Ingresos":
         if df.empty:
             return df
 
-        df["total_recaudo"] = pd.to_numeric(
-            df["total_recaudo"],
-            errors="coerce"
-        ).fillna(0)
+        df["total_recaudo"] = df["total_recaudo"].apply(_limpiar_total_recaudo)
 
         df = df[df["total_recaudo"] > 0].copy()
 
@@ -2041,42 +2886,3 @@ elif pagina == "Ejecución de Ingresos":
         file_name=f"ejecucion_ingresos_{ent}_{periodo}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
