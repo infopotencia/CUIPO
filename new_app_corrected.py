@@ -9,27 +9,30 @@ import openai
 import wikipedia
 import tempfile
 from fpdf import FPDF
-import vl_convert as vlc
 import datetime
 import qrcode
 from PIL import Image
 import matplotlib.pyplot as plt
 import xlsxwriter
-
+import unicodedata
+import re
 
 
 # Configura el idioma de Wikipedia a español
 wikipedia.set_lang("es")
 
 # Recupera tu API key desde Streamlit secrets
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+openai.api_key = st.secrets.get("OPENAI_API_KEY", None)
 
 # ——————————————————————————————————————————————————————
 # Helper para Base64
 # ——————————————————————————————————————————————————————
 def _get_base64(path):
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
+    try:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except Exception:
+        return ""
 
 # ——————————————————————————————————————————————————————
 # 1) Determina el tema y elige el logo
@@ -43,21 +46,21 @@ logo_b64  = _get_base64(logo_path)
 # ——————————————————————————————————————————————————————
 st.markdown("""
 <style>
-  /* Hacemos relative el sidebar para fijar el logo */
-  [data-testid="stSidebar"] { position: relative !important; }
+/* Hacemos relative el sidebar para fijar el logo */
+[data-testid="stSidebar"] { position: relative !important; }
 
-  /* Posicionamos el logo en el tope */
-  [data-testid="stSidebar"] .sidebar-logo {
+/* Posicionamos el logo en el tope */
+[data-testid="stSidebar"] .sidebar-logo {
     position: absolute;
     top: -50px;
     width: 100%;
     text-align: center;
     pointer-events: none;
-  }
-  [data-testid="stSidebar"] .sidebar-logo img {
+}
+[data-testid="stSidebar"] .sidebar-logo img {
     margin-top: 4px;
     width: 190px;
-  }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -72,9 +75,80 @@ st.sidebar.markdown(f"""
 
 
 
-# ------------------------------------------
-# Funciones
-# ------------------------------------------
+def normalizar_columna(col):
+    col = str(col).replace("\ufeff", "").strip()
+    col = unicodedata.normalize("NFKD", col).encode("ascii", "ignore").decode("ascii")
+    col = re.sub(r"[^0-9A-Za-z]+", "_", col)
+    col = re.sub(r"_+", "_", col).strip("_")
+    return col.upper()
+
+
+def limpiar_codigo(valor):
+    if pd.isna(valor):
+        return ""
+    s = str(valor).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    try:
+        if re.fullmatch(r"\d+(\.0+)?", s):
+            return str(int(float(s)))
+    except Exception:
+        pass
+    return s
+
+
+def normalizar_codigo_entidad(valor):
+    return limpiar_codigo(valor)
+
+
+def limpiar_valor_monetario(valor):
+    if pd.isna(valor):
+        return 0.0
+    if isinstance(valor, (int, float)):
+        return float(valor)
+
+    s = str(valor).strip().replace("$", "")
+    if not s:
+        return 0.0
+
+    negativo = s.startswith("(") and s.endswith(")")
+    s = s.replace("(", "").replace(")", "")
+    s = re.sub(r"[^0-9,\.\-]", "", s)
+
+    count_comma = s.count(",")
+    count_period = s.count(".")
+
+    if count_comma > 0 and count_period > 0:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif count_comma == 1 and count_period == 0:
+        s = s.replace(",", ".")
+    elif count_comma > 1 and count_period == 0:
+        s = s.replace(",", "")
+    elif count_period > 1 and count_comma == 0:
+        s = s.replace(".", "")
+
+    try:
+        valor_limpio = float(s)
+        return -valor_limpio if negativo else valor_limpio
+    except Exception:
+        return 0.0
+
+
+def _limpiar_total_recaudo(valor):
+    """
+    Limpia y convierte TOTAL_RECAUDO de forma robusta.
+    Maneja:
+    - Valores ya num?ricos
+    - Strings con $ y espacios
+    - Formato US (coma miles, punto decimal): 8,440,529.00
+    - Formato colombiano (punto miles, coma decimal): 8.440.529,00
+    """
+    return limpiar_valor_monetario(valor)
+
+
 @st.cache_data(ttl=600)
 def cargar_tablas_control():
     xls = pd.ExcelFile("Tablas Control.xlsx")
@@ -84,9 +158,54 @@ def cargar_tablas_control():
     df_cuentas = pd.read_excel(xls, sheet_name="Tablacontrolingresos")
     return df_mun, df_dep, df_per, df_cuentas
 
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cargar_csv_programacion_ingresos_local():
+    archivo = "programacion_ingreso_2025t4.csv"
+    if not os.path.exists(archivo):
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(archivo, encoding="latin-1", sep=";", on_bad_lines="skip")
+        df.columns = [normalizar_columna(c) for c in df.columns]
+        columnas_mapeo = {
+            "PERIODO": "periodo",
+            "CODIGO_ENTIDAD": "codigo_entidad",
+            "NOMBRE_ENTIDAD": "nombre_entidad",
+            "DEPARTAMENTO": "departamento",
+            "AMBITO_CODIGO": "ambito_codigo",
+            "AMBITO_NOMBRE": "ambito_nombre",
+            "COD_DETALLE_SECTORIAL": "cod_detalle_sectorial",
+            "NOM_DETALLE_SECTORIAL": "nom_detalle_sectorial",
+            "PRESUPUESTO_INICIAL": "presupuesto_inicial",
+            "PRESUPUESTO_DEFINITIVO": "presupuesto_definitivo",
+        }
+        df = df.rename(columns={k: v for k, v in columnas_mapeo.items() if k in df.columns})
+        for col in ["periodo", "codigo_entidad", "ambito_codigo"]:
+            if col in df.columns:
+                df[col] = df[col].apply(limpiar_codigo)
+        for col in ["nombre_entidad", "departamento", "ambito_nombre"]:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip()
+        return df
+    except Exception as e:
+        st.warning(f"Error al cargar CSV local de programaci?n de ingresos: {e}")
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def obtener_ingresos_filtrados(codigo_entidad, periodo=None):
-    codigo_entidad = int(float(codigo_entidad))
+    codigo_entidad = limpiar_codigo(codigo_entidad)
+    periodo = limpiar_codigo(periodo) if periodo is not None else None
+
+    df_local = cargar_csv_programacion_ingresos_local()
+    if not df_local.empty:
+        df_local_filt = df_local[df_local["codigo_entidad"].astype(str) == str(codigo_entidad)].copy()
+        if periodo and "periodo" in df_local_filt.columns:
+            df_local_filt = df_local_filt[df_local_filt["periodo"].astype(str) == str(periodo)].copy()
+        if periodo == "20251201" and not df_local_filt.empty:
+            return df_local_filt
+
     base_url = "https://www.datos.gov.co/resource/22ah-ddsj.csv"
     where_clause = f"codigo_entidad='{codigo_entidad}'"
     if periodo:
@@ -97,72 +216,61 @@ def obtener_ingresos_filtrados(codigo_entidad, periodo=None):
     }
     resp = requests.get(base_url, params=params, timeout=60)
     if resp.status_code != 200:
-        st.error(f"Error al obtener los datos. Código {resp.status_code}: {resp.text}")
+        st.error(f"Error al obtener los datos. C?digo {resp.status_code}: {resp.text}")
         return pd.DataFrame()
-    return pd.read_csv(io.StringIO(resp.text))
+    df_api = pd.read_csv(io.StringIO(resp.text))
+    if not df_api.empty:
+        return df_api
+    if not df_local.empty:
+        return df_local_filt
+    return pd.DataFrame()
 
 
-# ——————————————————————————————————————————————————————
-# Funciones auxiliares para normalización de datos XLSB
-# ——————————————————————————————————————————————————————
-import unicodedata
-import re
+@st.cache_data(ttl=600, show_spinner=False)
+def preparar_programacion_ingresos(df):
+    df = df.copy()
+    if df.empty:
+        return df
 
-def normalizar_columna(c):
-    """Normaliza un nombre de columna: quita tildes, espacios, mayúsculas."""
-    c = str(c).strip()
-    c = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii")
-    c = c.upper()
-    c = re.sub(r"[^A-Z0-9]+", "_", c)
-    c = re.sub(r"_+", "_", c).strip("_")
-    return c
+    df.columns = [str(c).strip() for c in df.columns]
+    for col in ["periodo", "codigo_entidad", "ambito_codigo"]:
+        if col in df.columns:
+            df[col] = df[col].apply(limpiar_codigo)
 
-def limpiar_codigo(x):
-    """Convierte un código (8001.0 -> '8001') a string limpio."""
-    if pd.isna(x):
-        return ""
-    s = str(x).strip()
-    try:
-        return str(int(float(s)))
-    except Exception:
-        return s
+    if "presupuesto_inicial" in df.columns:
+        valor_inicial = df["presupuesto_inicial"].apply(limpiar_valor_monetario)
+        if valor_inicial.abs().sum() > 0:
+            df["valor_inicial"] = valor_inicial
+        elif "cod_detalle_sectorial" in df.columns:
+            df["valor_inicial"] = df["cod_detalle_sectorial"].apply(limpiar_valor_monetario)
+        else:
+            df["valor_inicial"] = 0.0
+    elif "cod_detalle_sectorial" in df.columns:
+        df["valor_inicial"] = df["cod_detalle_sectorial"].apply(limpiar_valor_monetario)
+    else:
+        df["valor_inicial"] = 0.0
 
-def normalizar_codigo_entidad(x):
-    if pd.isna(x):
-        return ""
-    s = str(x).strip()
-    try:
-        return str(int(float(s)))
-    except Exception:
-        return s
+    if "presupuesto_definitivo" in df.columns:
+        valor_definitivo = df["presupuesto_definitivo"].apply(limpiar_valor_monetario)
+        if valor_definitivo.abs().sum() > 0:
+            df["valor_definitivo"] = valor_definitivo
+        elif "nom_detalle_sectorial" in df.columns:
+            df["valor_definitivo"] = df["nom_detalle_sectorial"].apply(limpiar_valor_monetario)
+        else:
+            df["valor_definitivo"] = 0.0
+    elif "nom_detalle_sectorial" in df.columns:
+        df["valor_definitivo"] = df["nom_detalle_sectorial"].apply(limpiar_valor_monetario)
+    else:
+        df["valor_definitivo"] = 0.0
 
-def limpiar_valor_monetario(valor):
-    """
-    Convierte a float de forma robusta para valores en formato
-    colombiano o estándar: 1.234.567,89 / $ 1.234.567 / 1234567.89
-    """
-    if pd.isna(valor):
-        return 0.0
-    if isinstance(valor, (int, float)):
-        return float(valor)
-    s = str(valor).strip().replace("$", "").strip()
-    if not s:
-        return 0.0
-    count_comma  = s.count(",")
-    count_period = s.count(".")
-    # Formato colombiano: 1.234.567,89  (puntos miles, coma decimal)
-    if count_period > 1 or (count_period >= 1 and count_comma == 1 and s.index(".") < s.index(",")):
-        s = s.replace(".", "").replace(",", ".")
-    # Formato US: 1,234,567.89  (comas miles, punto decimal)
-    elif count_comma > 1 or (count_comma >= 1 and count_period == 1 and s.index(",") < s.index(".")):
-        s = s.replace(",", "")
-    # Solo coma, asumir decimal colombiano
-    elif count_comma == 1 and count_period == 0:
-        s = s.replace(",", ".")
-    try:
-        return float(s)
-    except Exception:
-        return 0.0
+    if "presupuesto_inicial" in df.columns or "presupuesto_definitivo" in df.columns:
+        df["fuente_valores_prog"] = "presupuesto"
+    elif "cod_detalle_sectorial" in df.columns or "nom_detalle_sectorial" in df.columns:
+        df["fuente_valores_prog"] = "detalle_sectorial"
+    else:
+        df["fuente_valores_prog"] = "sin_columnas"
+
+    return df
 
 # ——————————————————————————————————————————————————————
 # NUEVA FUNCIÓN: cargar_xlsb_ejecucion_gastos_2025t4()
@@ -173,11 +281,11 @@ def limpiar_valor_monetario(valor):
 def cargar_xlsb_ejecucion_gastos_2025t4():
     """Carga el XLSB local de ejecución de gastos T4 2025 para el período 20251201."""
     archivo = "ejecucion_Gasto_2025t4.xlsb"
-    
+
     if not os.path.exists(archivo):
         st.warning(f"No se encontró el archivo local: {archivo}")
         return pd.DataFrame()
-    
+
     try:
         # Leer el XLSB con pyxlsb
         df = pd.read_excel(
@@ -186,10 +294,10 @@ def cargar_xlsb_ejecucion_gastos_2025t4():
             engine="pyxlsb",
             dtype=str
         )
-        
+
         # Paso 1: Normalizar nombres de columnas
         df.columns = [normalizar_columna(c) for c in df.columns]
-        
+
         # Paso 2: Mapeo de columnas normalizadas a nombres internos de la app
         columnas_mapeo = {
             "PERIODO": "periodo",
@@ -243,10 +351,10 @@ def cargar_xlsb_ejecucion_gastos_2025t4():
             "OBLIGACIONES": "obligaciones",
             "PAGOS": "pagos",
         }
-        
+
         # Aplicar renombramiento
         df = df.rename(columns={k: v for k, v in columnas_mapeo.items() if k in df.columns})
-        
+
         # Paso 3: Validar columnas mínimas
         columnas_minimas = [
             "periodo",
@@ -259,9 +367,9 @@ def cargar_xlsb_ejecucion_gastos_2025t4():
             "obligaciones",
             "pagos"
         ]
-        
+
         faltantes = [c for c in columnas_minimas if c not in df.columns]
-        
+
         if faltantes:
             st.warning(
                 "El archivo XLSB no tiene las columnas mínimas esperadas. "
@@ -269,19 +377,19 @@ def cargar_xlsb_ejecucion_gastos_2025t4():
                 f"Columnas encontradas: {list(df.columns)}"
             )
             return pd.DataFrame()
-        
+
         # Paso 4: Normalizar códigos (8001.0 -> "8001", etc.)
         for col in ["codigo_entidad", "periodo", "cuenta"]:
             if col in df.columns:
                 df[col] = df[col].apply(limpiar_codigo)
-        
+
         # Paso 5: Convertir valores monetarios
         for col in ["compromisos", "obligaciones", "pagos"]:
             if col in df.columns:
                 df[col] = df[col].apply(limpiar_valor_monetario)
-        
+
         return df
-    
+
     except Exception as e:
         st.warning(f"Error al cargar el archivo XLSB de gastos 2025-T4: {e}")
         return pd.DataFrame()
@@ -336,51 +444,6 @@ def obtener_datos_gastos(codigo_entidad, periodo):
         st.warning(f"No se pudo obtener la información de la API: {e}")
         return pd.DataFrame()
 
-def _limpiar_total_recaudo(valor):
-    """
-    Limpia y convierte TOTAL_RECAUDO de forma robusta.
-    Maneja:
-    - Valores ya numéricos
-    - Strings con $ y espacios
-    - Formato US (coma miles, punto decimal): 8,440,529.00
-    - Formato colombiano (punto miles, coma decimal): 8.440.529,00
-    """
-    if pd.isna(valor):
-        return 0.0
-    
-    # Si ya es número, retornar
-    if isinstance(valor, (int, float)):
-        return float(valor)
-    
-    # Convertir a string y limpiar
-    s = str(valor).strip()
-    
-    # Quitar símbolo $
-    s = s.replace('$', '').strip()
-    
-    if not s or s == '':
-        return 0.0
-    
-    # Detectar formato: contar comas y puntos
-    count_comma = s.count(',')
-    count_period = s.count('.')
-    
-    # Formato US: 8,440,529.00 (múltiples comas, último punto es decimal)
-    if count_comma > count_period:
-        s = s.replace(',', '')  # Quitar comas (miles)
-        s = s.replace('.', '.')  # Punto se mantiene (decimal)
-    # Formato colombiano: 8.440.529,00 (múltiples puntos, última coma es decimal)
-    elif count_period > count_comma:
-        s = s.replace('.', '')  # Quitar puntos (miles)
-        s = s.replace(',', '.')  # Convertir coma a punto (decimal)
-    # Ambiguos: solo coma o solo punto
-    elif count_comma == 1 and count_period == 0:
-        s = s.replace(',', '.')  # Asumir coma como decimal
-    
-    try:
-        return float(s)
-    except:
-        return 0.0
 
 @st.cache_data(ttl=600, show_spinner=False)
 def cargar_csv_ejecucion_ingresos_local():
@@ -391,6 +454,7 @@ def cargar_csv_ejecucion_ingresos_local():
             return pd.DataFrame()
         
         df = pd.read_csv(archivo, encoding='latin-1', sep=';', on_bad_lines='skip')
+        df.columns = [normalizar_columna(c) for c in df.columns]
         
         # Normalizar nombres de columnas para que coincidan con API
         columnas_mapeo = {
@@ -477,17 +541,79 @@ def obtener_ejecucion_ingresos(codigo_entidad, periodo):
     else:
         return pd.DataFrame()
 
-        
+
+@st.cache_data(ttl=600, show_spinner=False)
+def obtener_ejecucion_comparativa_todos_periodos(periodo, cuenta_codigo):
+    """
+    Devuelve recaudo real (total_recaudo) agregado por codigo_entidad
+    para la comparativa per cápita. Para 20251201 usa CSV local.
+    Para otros períodos usa la API 9axr-9gnb (ejecución de ingresos).
+    Retorna DataFrame con columnas: codigo_entidad, valor_total.
+    """
+    periodo       = str(periodo).strip()
+    cuenta_codigo = str(cuenta_codigo).strip()
+
+    if periodo == "20251201":
+        df = cargar_csv_ejecucion_ingresos_local()
+        if df.empty:
+            return pd.DataFrame()
+        df["periodo"]        = df["periodo"].astype(str).str.strip()
+        df["codigo_entidad"] = df["codigo_entidad"].astype(str).str.strip()
+        df["cuenta"]         = df["cuenta"].astype(str).str.strip()
+        df["total_recaudo"]  = pd.to_numeric(df["total_recaudo"], errors="coerce").fillna(0)
+        df = df[(df["periodo"] == periodo) & (df["cuenta"] == cuenta_codigo)].copy()
+        if df.empty:
+            return pd.DataFrame()
+        return (
+            df.groupby("codigo_entidad", as_index=False)["total_recaudo"]
+            .sum()
+            .rename(columns={"total_recaudo": "valor_total"})
+        )
+
+    # Otros períodos: API ejecución de ingresos
+    url = "https://www.datos.gov.co/resource/9axr-9gnb.csv"
+    params = {
+        "$where":  f"periodo='{periodo}' AND cuenta='{cuenta_codigo}'",
+        "$select": "codigo_entidad,total_recaudo",
+        "$limit":  100000,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=60)
+        r.raise_for_status()
+        df = pd.read_csv(io.StringIO(r.text))
+        if df.empty:
+            return pd.DataFrame()
+        df["codigo_entidad"] = df["codigo_entidad"].astype(str).str.strip()
+        df["total_recaudo"]  = df["total_recaudo"].apply(_limpiar_total_recaudo)
+        return (
+            df.groupby("codigo_entidad", as_index=False)["total_recaudo"]
+            .sum()
+            .rename(columns={"total_recaudo": "valor_total"})
+        )
+    except Exception as e:
+        st.warning(f"No se pudo obtener datos de ejecución para la comparativa: {e}")
+        return pd.DataFrame()
 
 
-# ------------------------------------------
-# Página principal
-# ------------------------------------------
+
+def obtener_resumen_wikipedia(nombre_entidad, _unused=None):
+    try:
+        resultados = wikipedia.search(nombre_entidad + " Colombia")
+        if not resultados:
+            return ""
+        pagina = wikipedia.page(resultados[0])
+        return pagina.summary[:1500]
+    except Exception:
+        return ""
+
+
+# Página principal (sólo una copia debe permanecer)
+
 df_mun, df_dep, df_per, df_cuentas = cargar_tablas_control()
 
 pagina = st.sidebar.selectbox(
-    "Selecciona una página:",
-    ["Programación de Ingresos", "Comparativa Per Cápita", "Ejecución de Ingresos"]
+    "Selecciona una p\u00e1gina:",
+    ['Programación de Ingresos', 'Comparativa Per Cápita', 'Ejecución de Gastos', 'Ejecución de Ingresos']
 )
 
 
@@ -517,12 +643,13 @@ if pagina == "Programación de Ingresos":
     last_full_quarter = current_quarter - 1 if current_quarter > 1 else 0
 
     # Preparamos strings de periodo
-    df_per['periodo_str'] = df_per['periodo'].astype(str).str.zfill(8)
-    df_per['year'] = df_per['periodo_str'].str[:4].astype(int)
-    df_per['month'] = df_per['periodo_str'].str[4:6].astype(int)
+    df_per_local = df_per.copy()
+    df_per_local['periodo_str'] = df_per_local['periodo'].astype(str).str.zfill(8)
+    df_per_local['year'] = df_per_local['periodo_str'].str[:4].astype(int)
+    df_per_local['month'] = df_per_local['periodo_str'].str[4:6].astype(int)
 
     # Filtrar sólo años hasta el actual
-    df_per_filt = df_per[df_per['year'] <= current_year]
+    df_per_filt = df_per_local[df_per_local['year'] <= current_year]
 
     # Para el año actual, sólo hasta el último trimestre completo
     if last_full_quarter > 0:
@@ -542,15 +669,23 @@ if pagina == "Programación de Ingresos":
     if st.sidebar.button("Cargar datos de ingresos"):
         with st.spinner("Cargando datos..."):
             st.session_state['df_ingresos'] = obtener_ingresos_filtrados(cod_ent, per)
+            st.session_state['df_ingresos_cod'] = limpiar_codigo(cod_ent)
+            st.session_state['df_ingresos_per'] = limpiar_codigo(per)
 
     if 'df_ingresos' in st.session_state:
+        cod_actual = limpiar_codigo(cod_ent)
+        per_actual = limpiar_codigo(per)
+        if (
+            st.session_state.get('df_ingresos_cod') != cod_actual
+            or st.session_state.get('df_ingresos_per') != per_actual
+        ):
+            st.info("Cambiaste la entidad o el período. Presiona nuevamente 'Cargar datos de ingresos'.")
+            st.stop()
+
         df_i = st.session_state['df_ingresos']
 
         with st.expander("Datos brutos", expanded=False):
-            st.dataframe(
-                df_i.drop(columns=['presupuesto_inicial', 'presupuesto_definitivo'], errors='ignore'),
-                use_container_width=True
-            )
+            st.dataframe(df_i, use_container_width=True)
 
         # ── Helpers locales ───────────────────────────────────────────────
         def fmt_mm_pi(valor_pesos):
@@ -575,13 +710,26 @@ if pagina == "Programación de Ingresos":
 
         def val_inicial(df, codigo):
             fila = df[df['ambito_codigo'].astype(str) == str(codigo)]
-            return pd.to_numeric(fila['cod_detalle_sectorial'], errors='coerce').sum()
+            return pd.to_numeric(fila['valor_inicial'], errors='coerce').fillna(0).sum()
 
         def val_definitivo(df, codigo):
             fila = df[df['ambito_codigo'].astype(str) == str(codigo)]
-            return pd.to_numeric(fila['nom_detalle_sectorial'], errors='coerce').sum()
+            return pd.to_numeric(fila['valor_definitivo'], errors='coerce').fillna(0).sum()
 
-        df_base = df_i.copy() if 'ambito_codigo' in df_i.columns else pd.DataFrame()
+        df_base = preparar_programacion_ingresos(df_i) if 'ambito_codigo' in df_i.columns else pd.DataFrame()
+
+        # Diagnóstico de columnas monetarias (sumas y origen)
+        with st.expander("Diagnóstico de columnas monetarias", expanded=False):
+            diag = {
+                "presupuesto_inicial": df_base["presupuesto_inicial"].apply(limpiar_valor_monetario).abs().sum() if "presupuesto_inicial" in df_base.columns else 0,
+                "presupuesto_definitivo": df_base["presupuesto_definitivo"].apply(limpiar_valor_monetario).abs().sum() if "presupuesto_definitivo" in df_base.columns else 0,
+                "cod_detalle_sectorial": df_base["cod_detalle_sectorial"].apply(limpiar_valor_monetario).abs().sum() if "cod_detalle_sectorial" in df_base.columns else 0,
+                "nom_detalle_sectorial": df_base["nom_detalle_sectorial"].apply(limpiar_valor_monetario).abs().sum() if "nom_detalle_sectorial" in df_base.columns else 0,
+                "valor_inicial": df_base["valor_inicial"].sum() if "valor_inicial" in df_base.columns else 0,
+                "valor_definitivo": df_base["valor_definitivo"].sum() if "valor_definitivo" in df_base.columns else 0,
+                "fuente": df_base["fuente_valores_prog"].iloc[0] if ("fuente_valores_prog" in df_base.columns and not df_base.empty) else ""
+            }
+            st.dataframe(pd.DataFrame([diag]), use_container_width=True)
 
         total_ini  = val_inicial(df_base,  '1')
         total_def  = val_definitivo(df_base, '1')
@@ -654,8 +802,8 @@ if pagina == "Programación de Ingresos":
             df_sub = df_sub.copy()
             if df_sub.empty:
                 return df_sub
-            df_sub['ini']  = pd.to_numeric(df_sub['cod_detalle_sectorial'], errors='coerce').fillna(0)
-            df_sub['def_'] = pd.to_numeric(df_sub['nom_detalle_sectorial'], errors='coerce').fillna(0)
+            df_sub['ini']  = pd.to_numeric(df_sub['valor_inicial'], errors='coerce').fillna(0)
+            df_sub['def_'] = pd.to_numeric(df_sub['valor_definitivo'], errors='coerce').fillna(0)
             df_sub = df_sub[df_sub['def_'] > 0].copy()
             if df_sub.empty:
                 return df_sub
@@ -797,6 +945,8 @@ if pagina == "Programación de Ingresos":
         with st.spinner("Cargando histórico..."):
             df_hist_all = obtener_ingresos_filtrados(cod_ent)
 
+        df_hist_all = preparar_programacion_ingresos(df_hist_all)
+
         registros_hist = []
         if not df_hist_all.empty and 'ambito_codigo' in df_hist_all.columns:
             df_hist_all['periodo_dt'] = pd.to_datetime(
@@ -807,8 +957,8 @@ if pagina == "Programación de Ingresos":
             df_hist_all['md']   = df_hist_all['periodo_dt'].dt.strftime('%m%d')
 
             df_h1 = df_hist_all[df_hist_all['ambito_codigo'].astype(str) == '1'].copy()
-            df_h1['ini_val'] = pd.to_numeric(df_h1['cod_detalle_sectorial'], errors='coerce').fillna(0)
-            df_h1['def_val'] = pd.to_numeric(df_h1['nom_detalle_sectorial'], errors='coerce').fillna(0)
+            df_h1['ini_val'] = pd.to_numeric(df_h1['valor_inicial'], errors='coerce').fillna(0)
+            df_h1['def_val'] = pd.to_numeric(df_h1['valor_definitivo'], errors='coerce').fillna(0)
 
             anio_actual_h = int(df_h1['year'].max()) if not df_h1.empty else 0
             for yr, grp in df_h1.groupby('year'):
@@ -886,8 +1036,8 @@ if pagina == "Programación de Ingresos":
         st.subheader("Detalle presupuestal completo")
 
         df_detalle = df_base.copy()
-        df_detalle['Inicial']    = pd.to_numeric(df_detalle['cod_detalle_sectorial'], errors='coerce').fillna(0)
-        df_detalle['Definitivo'] = pd.to_numeric(df_detalle['nom_detalle_sectorial'], errors='coerce').fillna(0)
+        df_detalle['Inicial']    = pd.to_numeric(df_detalle['valor_inicial'], errors='coerce').fillna(0)
+        df_detalle['Definitivo'] = pd.to_numeric(df_detalle['valor_definitivo'], errors='coerce').fillna(0)
         df_detalle['% var']      = df_detalle.apply(lambda r: pct_var(r['Definitivo'], r['Inicial']), axis=1)
         df_detalle = df_detalle.rename(columns={
             'ambito_codigo': 'Código',
@@ -909,11 +1059,17 @@ if pagina == "Programación de Ingresos":
         st.markdown("---")
         output = io.BytesIO()
 
-        df_brutos_export = df_i.drop(columns=['presupuesto_inicial', 'presupuesto_definitivo'], errors='ignore').copy()
-        df_brutos_export = df_brutos_export.rename(columns={
-            'cod_detalle_sectorial': 'presupuestoinicial',
-            'nom_detalle_sectorial': 'presupuestodefinitivo'
-        })
+        df_brutos_export = preparar_programacion_ingresos(df_i).copy()
+        requested_cols = [
+            'periodo', 'codigo_entidad', 'nombre_entidad', 'departamento',
+            'ambito_codigo', 'ambito_nombre', 'cod_detalle_sectorial',
+            'nom_detalle_sectorial', 'presupuesto_inicial', 'presupuesto_definitivo',
+            'valor_inicial', 'valor_definitivo'
+        ]
+        df_brutos_export = pd.concat([
+            df_brutos_export[ [c for c in requested_cols if c in df_brutos_export.columns] ],
+            df_brutos_export[ [c for c in df_brutos_export.columns if c not in requested_cols] ]
+        ], axis=1)
         if 'ambito_codigo' in df_brutos_export.columns:
             df_brutos_export = df_brutos_export.sort_values('ambito_codigo', ascending=True)
 
@@ -924,7 +1080,7 @@ if pagina == "Programación de Ingresos":
 
             df_brutos_export.to_excel(writer, index=False, sheet_name='Datos Brutos')
             ws0 = writer.sheets['Datos Brutos']
-            for col_name in ['presupuestoinicial', 'presupuestodefinitivo']:
+            for col_name in ['valor_inicial', 'valor_definitivo']:
                 if col_name in df_brutos_export.columns:
                     idx_c = df_brutos_export.columns.get_loc(col_name)
                     ws0.set_column(idx_c, idx_c, None, currency_fmt)
@@ -998,11 +1154,12 @@ elif pagina == "Comparativa Per Cápita":
     current_quarter = (current_month - 1) // 3 + 1
     last_full_quarter = current_quarter - 1 if current_quarter > 1 else 0
     # Preparar strings de periodo
-    df_per['periodo_str'] = df_per['periodo'].astype(str).str.zfill(8)
-    df_per['year'] = df_per['periodo_str'].str[:4].astype(int)
-    df_per['month'] = df_per['periodo_str'].str[4:6].astype(int)
+    df_per_local = df_per.copy()
+    df_per_local['periodo_str'] = df_per_local['periodo'].astype(str).str.zfill(8)
+    df_per_local['year'] = df_per_local['periodo_str'].str[:4].astype(int)
+    df_per_local['month'] = df_per_local['periodo_str'].str[4:6].astype(int)
     # Filtrar años hasta el actual
-    df_per_filt = df_per[df_per['year'] <= current_year]
+    df_per_filt = df_per_local[df_per_local['year'] <= current_year]
     # Para el año actual, solo hasta el último trimestre completo
     if last_full_quarter > 0:
         df_per_filt = df_per_filt[~((df_per_filt['year'] == current_year) & (df_per_filt['month'] > last_full_quarter * 3))]
@@ -1020,91 +1177,9 @@ elif pagina == "Comparativa Per Cápita":
         df_cuentas['Nombre de la Cuenta'].dropna().astype(str).unique(),
         key="cuenta_comparativa"
     )
+    st.session_state['cuenta_comparativa'] = cuenta_sel
 
     # Ejecutar comparativa
-
-    def obtener_ejecucion_ingresos_comparativa(periodo, cuenta_codigo):
-        """
-        Devuelve una base agregada por entidad para la comparativa per cápita
-        usando ejecución de ingresos. Solo se usa para periodo 20251201.
-        """
-        df = cargar_csv_ejecucion_ingresos_local()
-
-        if df.empty:
-            return pd.DataFrame()
-
-        df["periodo"] = df["periodo"].astype(str).str.strip()
-        df["codigo_entidad"] = df["codigo_entidad"].astype(str).str.strip()
-        df["cuenta"] = df["cuenta"].astype(str).str.strip()
-        df["total_recaudo"] = pd.to_numeric(df["total_recaudo"], errors="coerce").fillna(0)
-
-        df = df[
-            (df["periodo"] == str(periodo)) &
-            (df["cuenta"] == str(cuenta_codigo))
-        ].copy()
-
-        if df.empty:
-            return pd.DataFrame()
-
-        df_sum = (
-            df.groupby("codigo_entidad", as_index=False)["total_recaudo"]
-              .sum()
-              .rename(columns={"total_recaudo": "valor_total"})
-        )
-
-        return df_sum
-
-    @st.cache_data(ttl=600, show_spinner=False)
-    def obtener_ejecucion_comparativa_todos_periodos(periodo, cuenta_codigo):
-        """
-        Devuelve recaudo real (total_recaudo) agregado por codigo_entidad
-        para la comparativa per cápita. Para 20251201 usa CSV local.
-        Para otros períodos usa la API 9axr-9gnb (ejecución de ingresos).
-        Retorna DataFrame con columnas: codigo_entidad, valor_total.
-        """
-        periodo       = str(periodo).strip()
-        cuenta_codigo = str(cuenta_codigo).strip()
-
-        if periodo == "20251201":
-            df = cargar_csv_ejecucion_ingresos_local()
-            if df.empty:
-                return pd.DataFrame()
-            df["periodo"]        = df["periodo"].astype(str).str.strip()
-            df["codigo_entidad"] = df["codigo_entidad"].astype(str).str.strip()
-            df["cuenta"]         = df["cuenta"].astype(str).str.strip()
-            df["total_recaudo"]  = pd.to_numeric(df["total_recaudo"], errors="coerce").fillna(0)
-            df = df[(df["periodo"] == periodo) & (df["cuenta"] == cuenta_codigo)].copy()
-            if df.empty:
-                return pd.DataFrame()
-            return (
-                df.groupby("codigo_entidad", as_index=False)["total_recaudo"]
-                  .sum()
-                  .rename(columns={"total_recaudo": "valor_total"})
-            )
-
-        # Otros períodos: API ejecución de ingresos
-        url = "https://www.datos.gov.co/resource/9axr-9gnb.csv"
-        params = {
-            "$where":  f"periodo='{periodo}' AND cuenta='{cuenta_codigo}'",
-            "$select": "codigo_entidad,total_recaudo",
-            "$limit":  100000,
-        }
-        try:
-            r = requests.get(url, params=params, timeout=60)
-            r.raise_for_status()
-            df = pd.read_csv(io.StringIO(r.text))
-            if df.empty:
-                return pd.DataFrame()
-            df["codigo_entidad"] = df["codigo_entidad"].astype(str).str.strip()
-            df["total_recaudo"]  = df["total_recaudo"].apply(_limpiar_total_recaudo)
-            return (
-                df.groupby("codigo_entidad", as_index=False)["total_recaudo"]
-                  .sum()
-                  .rename(columns={"total_recaudo": "valor_total"})
-            )
-        except Exception as e:
-            st.warning(f"No se pudo obtener datos de ejecución para la comparativa: {e}")
-            return pd.DataFrame()
 
     if st.button("Ejecutar comparativa", key="btn_ejecutar_comp"):
         # Limpiar informe previo
@@ -1126,6 +1201,10 @@ elif pagina == "Comparativa Per Cápita":
 
         # Filtrar población por año del periodo
         year = int(periodo[:4])
+
+        if 'año' not in df_entities.columns:
+            st.error("Falta columna 'año' en tabla de entidades.")
+            st.stop()
 
         _cols_pop = ['codigo_entidad', 'nombre_entidad', 'poblacion', 'categoria']
         if nivel == "Municipios" and 'departamento' in df_entities.columns:
@@ -1386,6 +1465,9 @@ elif pagina == "Comparativa Per Cápita":
     # Generar informe y PDF
     if 'chart' in st.session_state:
         if st.button("Generar Informe y PDF"):
+            if not openai.api_key:
+                st.warning("Configura OPENAI_API_KEY en secrets.")
+                st.stop()
             resumen = obtener_resumen_wikipedia(st.session_state['entity'], None)
             prompt = f"""
 Actúa como un economista especializado en desarrollo territorial colombiano. A continuación se presenta un extracto de Wikipedia sobre {st.session_state['entity']}, que puede contener información útil sobre su economía o contexto territorial:
@@ -1410,7 +1492,7 @@ Evita sugerencias, recomendaciones, o valoraciones implícitas sobre si el resul
                     ], max_tokens=800, temperature=0.7
                 )
                 st.session_state['informe'] = resp.choices[0].message.content.strip()
-            except openai.error.RateLimitError:
+            except openai.RateLimitError:
                 st.session_state['informe'] = 'Error: límite API excedido.'
 
     # Mostrar informe y PDF
@@ -1596,11 +1678,12 @@ elif pagina == "Ejecución de Gastos":
     current_quarter = (current_month - 1) // 3 + 1
     last_full_quarter = current_quarter - 1 if current_quarter > 1 else 0
 
-    df_per["periodo_str"] = df_per["periodo"].astype(str).str.zfill(8)
-    df_per["year"] = df_per["periodo_str"].str[:4].astype(int)
-    df_per["month"] = df_per["periodo_str"].str[4:6].astype(int)
+    df_per_local = df_per.copy()
+    df_per_local["periodo_str"] = df_per_local["periodo"].astype(str).str.zfill(8)
+    df_per_local["year"] = df_per_local["periodo_str"].str[:4].astype(int)
+    df_per_local["month"] = df_per_local["periodo_str"].str[4:6].astype(int)
 
-    df_per_filt = df_per[df_per["year"] <= current_year].copy()
+    df_per_filt = df_per_local[df_per_local["year"] <= current_year].copy()
     if last_full_quarter > 0:
         df_per_filt = df_per_filt[~(
             (df_per_filt["year"] == current_year) &
@@ -2206,10 +2289,11 @@ elif pagina == "Ejecución de Ingresos":
     current_quarter   = (current_month - 1) // 3 + 1
     last_full_quarter = current_quarter - 1 if current_quarter > 1 else 0
 
-    df_per['periodo_str'] = df_per['periodo'].astype(str).str.zfill(8)
-    df_per['year']        = df_per['periodo_str'].str[:4].astype(int)
-    df_per['month']       = df_per['periodo_str'].str[4:6].astype(int)
-    df_per_filt = df_per[df_per['year'] <= current_year]
+    df_per_local = df_per.copy()
+    df_per_local['periodo_str'] = df_per_local['periodo'].astype(str).str.zfill(8)
+    df_per_local['year']        = df_per_local['periodo_str'].str[:4].astype(int)
+    df_per_local['month']       = df_per_local['periodo_str'].str[4:6].astype(int)
+    df_per_filt = df_per_local[df_per_local['year'] <= current_year]
     if last_full_quarter > 0:
         df_per_filt = df_per_filt[~(
             (df_per_filt['year'] == current_year) &
@@ -2431,8 +2515,8 @@ elif pagina == "Ejecución de Ingresos":
 
         df = (
             df.sort_values("total_recaudo", ascending=False)
-              .head(top_n)
-              .reset_index(drop=True)
+            .head(top_n)
+            .reset_index(drop=True)
         )
 
         return df
@@ -2755,6 +2839,7 @@ elif pagina == "Ejecución de Ingresos":
                     'recaudo': total_h
                 })
 
+    df_serie = pd.DataFrame()
     if registros_hist:
         ipc_map = {2019: 97.46, 2020: 100.00, 2021: 111.41, 2022: 126.03, 2023: 137.09, 2024: 144.88}
         df_serie = pd.DataFrame(registros_hist).sort_values('periodo_dt')
